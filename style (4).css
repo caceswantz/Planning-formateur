@@ -1,0 +1,49 @@
+/* Style commun : sobre, mobile-first, contrastes forts */
+body{font:18px/1.4 system-ui,sans-serif;margin:0;background:#f4f5f7;color:#111}
+main{max-width:1100px;margin:auto;padding:12px}
+h1{font-size:1.5em;margin:.4em 0}h2{font-size:1.25em;margin:.2em 0 .6em}h3{margin:1em 0 .4em}
+button,input,select,textarea{font:inherit;padding:11px;border-radius:10px;border:1px solid #888;margin:3px}
+button{background:#1d4ed8;color:#fff;border:0;min-height:46px;cursor:pointer}
+button.sec{background:#fff;color:#111;border:1px solid #888}button.del{background:#b91c1c}
+.card{background:#fff;border-radius:14px;padding:14px;margin:12px 0;border-left:10px solid #1d4ed8;box-shadow:0 1px 3px #0003}
+.h{font-size:1.5em;font-weight:700}.tag{display:inline-block;background:#e5e7eb;border-radius:8px;padding:2px 8px;margin:2px}
+.warn{background:#fef3c7;border:1px solid #d97706;padding:2px 8px;border-radius:8px;font-size:.85em}
+.nav{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:6px 0}.nav button{flex:1;min-width:90px}
+.menu{position:sticky;top:0;background:#f4f5f7;padding:6px 0;z-index:5;border-bottom:2px solid #ccc}
+.leg{color:#555;font-size:.85em;margin:6px 0}
+.tw{overflow-x:auto;margin:6px 0}
+table{border-collapse:collapse;width:100%;background:#fff}td,th{border:1px solid #bbb;padding:8px;text-align:left}
+tr:nth-child(even) td{background:#f8fafc}
+table.fam th{border-top:6px solid var(--fc);background:#f1f5f9}
+td.j{text-align:center;cursor:pointer;min-width:62px;font-weight:600}td.j.on{background:#dbeafe!important}td.off{background:#e5e7eb!important;text-align:center;color:#777}
+label.k{display:inline-block;margin:4px 10px 4px 0}
+.grid{display:grid;gap:6px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+#pop{position:fixed;inset:0;background:#0007;display:flex;align-items:center;justify-content:center;z-index:50}#pop[hidden]{display:none}
+.pb{background:#fff;border-radius:14px;padding:16px;width:min(92vw,360px)}.pb button{margin:4px 0}
+/* Badges famille / catégorie (lisibles de loin, repères par texte et cadre, pas seulement par la couleur) */
+.fb{display:inline-block;color:#fff;font-weight:700;border-radius:8px;padding:2px 12px;font-size:1.1em}
+.cb{display:inline-block;border:3px solid #111;border-radius:8px;padding:0 10px;font-weight:700;font-size:1.1em;margin-left:6px;background:#fff}
+.sc{display:inline-block;border:2px solid #111;border-radius:6px;padding:0 6px;margin-left:6px;font-weight:700;background:#fff;font-size:.9em}
+.tag{font-size:1.05em;padding:4px 10px}
+/* ---- v6 : badges PRATIQUE / THÉORIE (libellé complet + icône + couleur) ---- */
+.bd{display:inline-flex;align-items:center;gap:6px;font-weight:800;letter-spacing:.05em;font-size:1.05em;padding:4px 12px;border-radius:6px;margin:2px 6px 2px 2px;border:3px solid;vertical-align:middle}
+.bd.pra{background:#c2410c;border-color:#7c2d12;color:#fff}      /* orange */
+.bd.theo{background:#1d4ed8;border-color:#1e3a8a;color:#fff}     /* bleu */
+.bd .ic{font-size:1.25em;line-height:1}
+.ty{font-weight:700;text-transform:uppercase;font-size:.85em;color:#374151;margin:0 2px}
+/* tableau compact (vue globale stagiaires) */
+table.cp{font-size:14px}table.cp td,table.cp th{padding:3px 6px;line-height:1.2}
+tr.tot td{font-weight:700;background:#e2e8f0!important;border-top:2px solid #111}
+.mini{border:1px solid #000;border-radius:6px;padding:3px;margin:2px 0;cursor:pointer;background:#fff}
+.pb label{display:block;margin:6px 0;font-weight:600}.pb input,.pb select{width:100%;box-sizing:border-box}
+#fc{scroll-margin-top:70px}#fc.flash{animation:fl 1.6s}@keyframes fl{0%,60%{box-shadow:0 0 0 6px #f59e0b}100%{box-shadow:0 1px 3px #0003}}
+/* impression noir et blanc : badges sans couleur de fond, distingués par l'icône, le libellé et le cadre (simple = pratique, double = théorie) */
+@media print{.bd,.bd.pra,.bd.theo{background:#fff!important;color:#000!important;border-color:#000!important}.bd.theo{border-style:double;border-width:5px}.ty{color:#000}}
+/* boutons réduits dans le tableau compact (gain de place) */
+table.cp button{min-height:28px;padding:2px 8px;margin:0 2px;border-radius:6px}
+/* v7 : colonnes alignées entre familles, totaux par jour de fin */
+table.cp{table-layout:fixed;width:100%}
+table.cp td{overflow-wrap:anywhere}
+tr.tot2 td{font-size:13px;background:#f1f5f9!important;border-top:1px dashed #111}
+#chint{margin:4px 0;font-weight:600}
+@media print{.np,col.np{display:none!important}}
