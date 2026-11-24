@@ -1,0 +1,144 @@
+<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Admin planning</title><style>#pz{display:none}@media print{main{display:none}#pz{display:block}body{background:#fff;color:#000}table{font-size:12px}td,th{border:1px solid #000}h4{margin:10px 0 4px}}</style><link rel="stylesheet" href="style.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.58.0/dist/umd/supabase.js"></script><script src="config.js"></script></head>
+<body><main id="app"></main><div id="pz"></div><script>
+// Administration v2. Rubriques : Planning, Stagiaires, Formateurs, Paramètres. Accès protégé par Supabase Auth + RLS.
+const sb=supabase.createClient(SUPABASE_URL,SUPABASE_ANON_KEY), app=document.getElementById('app');
+const FAM=['R482','R484','R485','R486','R489','R490'], JN=['Lun','Mar','Mer','Jeu','Ven'], $=id=>document.getElementById(id);
+const T={formateurs:'f',salles:'sa',stagiaires:'st',creneaux:'cr'};   // table -> clé du cache D
+const iso=d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+const add=(s,n)=>{const d=new Date(s+'T12:00');d.setDate(d.getDate()+n);return iso(d)};
+const lundiDe=s=>add(s,-((new Date(s+'T12:00').getDay()+6)%7));
+let S={lundi:lundiDe(iso(new Date())),page:'planning',fam:'R482',edit:null,sel:[]}, D={};
+const ok=async q=>{const r=await q;if(r.error){alert(r.error.message);throw r.error}return r.data};
+const opt=(a,v,l,sel)=>a.map(x=>`<option value="${x[v]}" ${x[v]==sel?'selected':''}>${l(x)}</option>`).join('');
+const nomSt=id=>{const s=D.st.find(x=>x.id==id);return s?s.prenom+' '+s.nom:'?'};
+const wk=()=>`<div class="nav"><button class="sec" onclick="S.lundi=add(S.lundi,-7);charger()">◀ Précédente</button><b>Semaine du ${S.lundi.split('-').reverse().join('/')}</b><button class="sec" onclick="S.lundi=add(S.lundi,7);charger()">Suivante ▶</button><input type="date" onchange="S.lundi=lundiDe(this.value);charger()"></div>`;
+
+async function init(){const{data}=await sb.auth.getSession();data.session?charger():login()}
+function login(){app.innerHTML=`<h1>Admin</h1><input id="e" type="email" placeholder="E-mail"><input id="p" type="password" placeholder="Mot de passe"><button onclick="connexion()">Connexion</button>`}
+async function connexion(){const{error}=await sb.auth.signInWithPassword({email:$('e').value,password:$('p').value});error?alert(error.message):charger()}
+async function charger(){
+ const q=await Promise.all([sb.from('parametres').select('*').single(),sb.from('formateurs').select('*').order('nom'),sb.from('salles').select('*').order('nom'),
+  sb.from('stagiaires').select('*').order('nom'),sb.from('categories').select('*').order('ordre'),
+  sb.from('creneaux').select('*,creneau_stagiaires(stagiaire_id)').gte('jour',S.lundi).lte('jour',add(S.lundi,4)).order('jour').order('debut')]);
+ const e=q.find(x=>x.error);if(e)return alert('Accès refusé ou migration manquante : '+e.error.message);
+ D={p:q[0].data,f:q[1].data,sa:q[2].data,st:q[3].data,cat:q[4].data,cr:q[5].data};render()}
+function render(){
+ app.innerHTML=`<div class="nav">${[['planning','Planning'],['stagiaires','Stagiaires'],['formateurs','Formateurs'],['params','Paramètres']].map(([k,l])=>`<button class="${S.page==k?'':'sec'}" onclick="S.page='${k}';S.edit=null;render()">${l}</button>`).join('')}<button class="sec" onclick="sb.auth.signOut().then(login)">Déconnexion</button></div>
+ <p id="ban" class="warn" hidden onclick="charger()">Données modifiées sur un autre poste — toucher pour actualiser</p><div id="pg"></div>`;
+ ({planning:pPlanning,stagiaires:pStag,formateurs:pForm,params:pParams})[S.page]()}
+
+// ---- Mises à jour protégées : refusées si quelqu'un d'autre a modifié l'élément entre-temps (colonne maj_le) ----
+async function upd(t,id,v){const row=D[T[t]].find(x=>x.id==id);
+ const d=await ok(sb.from(t).update(v).eq('id',id).eq('maj_le',row.maj_le).select());
+ if(!d.length)alert('Cet élément a été modifié sur un autre poste : vos changements n\'ont PAS été enregistrés. Les données sont rechargées.');charger()}
+async function sup(t,id){if(confirm('Supprimer ?')){await ok(sb.from(t).delete().eq('id',id));charger()}}
+async function renom(t,id){const n=prompt('Nom',D[T[t]].find(x=>x.id==id).nom);if(n)upd(t,id,{nom:n})}
+async function ajout(t){const n=prompt('Nom');if(n){await ok(sb.from(t).insert({nom:n}));charger()}}
+
+// ---- Formateurs ----
+function pForm(){$('pg').innerHTML=`<div class="card"><h2>Formateurs</h2>${D.f.map(f=>`<div><b>${f.nom}</b> <label class="k"><input type="checkbox" ${f.actif?'checked':''} onchange="upd('formateurs','${f.id}',{actif:this.checked})"> accès actif</label>
+ <button class="sec" onclick="renom('formateurs','${f.id}')">✎</button><button class="del" onclick="sup('formateurs','${f.id}')">✕</button></div>`).join('')}<button onclick="ajout('formateurs')">+ Formateur</button></div>`}
+
+// ---- Paramètres : accès, salles, catégories ----
+function pParams(){$('pg').innerHTML=`<div class="card"><h2>Accès</h2><label class="k"><input type="checkbox" ${D.p.planning_ouvert?'':'checked'} onchange="majP({planning_ouvert:!this.checked})"> Planning fermé (tous les formateurs)</label><button class="sec" onclick="code()">Changer le code d'accès</button></div>
+ <div class="card"><h2>Salles</h2>${D.sa.map(x=>`<div>${x.nom} <button class="sec" onclick="renom('salles','${x.id}')">✎</button><button class="del" onclick="sup('salles','${x.id}')">✕</button></div>`).join('')}<button onclick="ajout('salles')">+ Salle</button></div>
+ <div class="card"><h2>Paramètres des catégories</h2>${FAM.map(f=>`<h4>${f}</h4>${D.cat.filter(c=>c.famille==f).map(c=>`<span class="tag">${c.nom} <a href="#" onclick="renCat('${c.id}');return false">✎</a> <a href="#" onclick="supCat('${c.id}');return false">✕</a></span>`).join('')||'<small>Catégorie unique</small> '}<button class="sec" onclick="addCat('${f}')">+ Catégorie</button>`).join('')}</div>`}
+async function majP(v){await ok(sb.from('parametres').update(v).eq('id',1));charger()}
+async function code(){const c=prompt('Nouveau code d\'accès des formateurs');if(c){await ok(sb.rpc('definir_code',{p_code:c}));alert('Code modifié.')}}
+async function addCat(f){const n=prompt('Nouvelle catégorie '+f);if(n){await ok(sb.from('categories').insert({famille:f,nom:n,ordre:D.cat.filter(c=>c.famille==f).length}));charger()}}
+async function renCat(id){const c=D.cat.find(x=>x.id==id),n=prompt('Renommer',c.nom);if(!n||n==c.nom)return;
+ await ok(sb.from('categories').update({nom:n}).eq('id',id));   // on répercute le nouveau nom sur stagiaires et créneaux
+ for(const s of D.st.filter(s=>s.famille==c.famille&&(s.categories||[]).includes(c.nom)))await ok(sb.from('stagiaires').update({categories:s.categories.map(x=>x==c.nom?n:x)}).eq('id',s.id));
+ await ok(sb.from('creneaux').update({categorie:n}).eq('famille',c.famille).eq('categorie',c.nom));charger()}
+async function supCat(id){const c=D.cat.find(x=>x.id==id),n=D.st.filter(s=>s.famille==c.famille&&(s.categories||[]).includes(c.nom)).length;
+ if(confirm(n?`${n} stagiaire(s) utilisent « ${c.nom} ». Supprimer quand même ? L'historique est conservé.`:'Supprimer ?')){await ok(sb.from('categories').delete().eq('id',id));charger()}}
+
+// ---- Stagiaires : onglets par famille + vue globale, tableau de la semaine ----
+function pStag(){$('pg').innerHTML=`<div class="nav">${[...FAM,'Globale'].map(t=>`<button class="${S.fam==t?'':'sec'}" onclick="S.fam='${t}';render()">${t=='Globale'?'Vue globale':t}</button>`).join('')}</div>${wk()}<button onclick="editSt(null,'${S.fam=='Globale'?'R482':S.fam}')">+ Nouveau stagiaire</button><div class="card" id="sf" hidden></div>
+ ${S.fam=='Globale'?FAM.map(f=>`<h3>${f}</h3>${tabFam(f)}`).join(''):`${tabFam(S.fam)}
+ <button class="sec" onclick="$('csv').click()">Import CSV</button><input id="csv" type="file" accept=".csv" hidden onchange="importCsv(this.files[0])"><small> nom;prénom;entreprise;famille;catégories (A|B);type;début;fin</small>`}`}
+// Repères : ▶ début, ■ fin, ● présence (fond gris), · absent. Clic sur un jour = début (ou fin si un début existe déjà).
+function tabFam(f){const lun=S.lundi,ven=add(lun,4),jr=[0,1,2,3,4].map(i=>add(lun,i));
+ const l=D.st.filter(s=>s.famille==f&&(!s.date_debut||(s.date_debut<=ven&&(!s.date_fin||s.date_fin>=lun))));
+ const pris=new Set(D.cr.flatMap(c=>c.creneau_stagiaires.map(x=>x.stagiaire_id)));
+ if(!l.length)return '<small>Aucun stagiaire cette semaine.</small>';
+ return `<div style="overflow-x:auto"><table><tr><th>Stagiaire</th>${JN.map(j=>`<th>${j}</th>`).join('')}<th></th></tr>`+l.map(s=>{
+  const pres=s.date_debut&&jr.some(d=>d>=s.date_debut&&(!s.date_fin||d<=s.date_fin));
+  return `<tr><td><b>${s.prenom} ${s.nom}</b>${pres&&!pris.has(s.id)?' <span class="warn">à planifier</span>':''}<br><small>${s.entreprise||''} · ${(s.categories||[]).join(', ')||'—'} · ${s.type}</small></td>`+
+  jr.map(d=>{const b=s.date_debut==d,e=s.date_fin==d,p=s.date_debut&&d>=s.date_debut&&(!s.date_fin||d<=s.date_fin);
+   return `<td style="text-align:center;cursor:pointer;${p?'background:#ddd':''}" onclick="clic('${s.id}','${d}')">${b&&e?'▶■ début+fin':b?'▶ début':e?'■ fin':p?'●':'·'}</td>`}).join('')+
+  `<td><button class="sec" onclick="editSt('${s.id}')">✎</button><button class="sec" onclick="upd('stagiaires','${s.id}',{date_fin:'${iso(new Date())}'})">Terminer</button><button class="del" onclick="sup('stagiaires','${s.id}')">✕</button></td></tr>`}).join('')+'</table></div>'}
+function clic(id,d){const s=D.st.find(x=>x.id==id);
+ if(!s.date_debut||d<s.date_debut)return upd('stagiaires',id,{date_debut:d,date_fin:s.date_fin&&s.date_fin<d?null:s.date_fin});
+ if(d>s.date_debut)upd('stagiaires',id,{date_fin:d})}
+function editSt(id,fam){const s=D.st.find(x=>x.id==id)||{famille:fam,categories:[],type:'Formation'};S.es=id;S.sc=s.categories||[];
+ $('sf').hidden=false;$('sf').innerHTML=`<h3>${id?'Modifier':'Nouveau'} stagiaire</h3><div class="grid"><input id="sn" placeholder="Nom" value="${s.nom||''}"><input id="sp" placeholder="Prénom" value="${s.prenom||''}"><input id="se" placeholder="Entreprise" value="${s.entreprise||''}">
+ <select id="sfa" onchange="S.sc=[];catsSt()">${FAM.map(r=>`<option ${r==s.famille?'selected':''}>${r}</option>`).join('')}</select>
+ <select id="sty">${['Formation','Test','Les deux'].map(t=>`<option ${t==s.type?'selected':''}>${t}</option>`).join('')}</select>
+ <label>Début <input type="date" id="sd" value="${s.date_debut||''}"></label><label>Fin <input type="date" id="sfi" value="${s.date_fin||''}"></label></div><div id="sc"></div>
+ <button onclick="saveSt()">Enregistrer</button><button class="sec" onclick="$('sf').hidden=true">Annuler</button>`;catsSt();$('sf').scrollIntoView()}
+function catsSt(){const l=D.cat.filter(c=>c.famille==$('sfa').value);$('sc').innerHTML=l.length?'Catégories : '+l.map(c=>`<label class="k"><input type="checkbox" class="sc" value="${c.nom}" ${S.sc.includes(c.nom)?'checked':''}> ${c.nom}</label>`).join(''):'<small>Pas de sous-catégorie.</small>'}
+async function saveSt(){const r={nom:$('sn').value.trim(),prenom:$('sp').value.trim(),entreprise:$('se').value.trim(),famille:$('sfa').value,type:$('sty').value,
+  date_debut:$('sd').value||null,date_fin:$('sfi').value||null,categories:[...document.querySelectorAll('.sc:checked')].map(x=>x.value)};
+ if(!r.nom||!r.prenom)return alert('Nom et prénom obligatoires.');
+ if(r.date_debut&&r.date_fin&&r.date_fin<r.date_debut)return alert('La fin est avant le début.');
+ if(S.es)await upd('stagiaires',S.es,r);else{await ok(sb.from('stagiaires').insert(r));charger()}}
+async function importCsv(file){for(const l of (await file.text()).split(/\r?\n/).filter(x=>x.trim())){const[nom,prenom,ent,fam,cats,type,d1,d2]=l.split(';').map(x=>x.trim());if(!FAM.includes(fam))continue;
+  await ok(sb.from('stagiaires').insert({nom,prenom,entreprise:ent,famille:fam,categories:cats?cats.split('|'):[],type:type||'Formation',date_debut:d1||null,date_fin:d2||null}))}charger()}
+
+// ---- Planning : créneaux ----
+function pPlanning(){$('pg').innerHTML=wk()+`<div class="card"><button onclick="imprimer('')">Imprimer la semaine (global)</button> <select id="pf">${opt(D.f,'id',x=>x.nom)}<option value="tous">Tous (1 page par formateur)</option></select><button class="sec" onclick="imprimer($('pf').value)">Imprimer ce formateur</button></div>`+`<div class="card" id="fc"></div><div class="card"><h3>Créneaux de la semaine</h3>${JN.map((j,i)=>{const d=add(S.lundi,i);
+ return `<h4>${j} ${d.slice(8)}/${d.slice(5,7)}</h4>`+(D.cr.filter(c=>c.jour==d).map(c=>`<div class="card ${c.est_test&&!c.est_formation?'test':''}"><b>${c.debut.slice(0,5)}–${c.fin.slice(0,5)} ${c.famille}${c.categorie?' '+c.categorie:''}</b>
+ ${c.est_formation?'F-'+c.nature_formation:''} ${c.est_test?'T-'+c.nature_test:''} · ${(D.f.find(x=>x.id==c.formateur_id)||{}).nom||'—'}${c.salle_id?' · '+(D.sa.find(x=>x.id==c.salle_id)||{}).nom:''}<br>
+ ${c.creneau_stagiaires.map(x=>`<span class="tag">${nomSt(x.stagiaire_id)}</span>`).join('')}<br><button class="sec" onclick="formCr('${c.id}')">Modifier / déplacer</button><button class="sec" onclick="formCr('${c.id}',1)">Dupliquer</button><button class="del" onclick="sup('creneaux','${c.id}')">Supprimer</button></div>`).join('')||'<small>—</small>')}).join('')}</div>`;formCr()}
+function formCr(id,dup){const c=D.cr.find(x=>x.id==id)||{jour:S.lundi,debut:'08:00',fin:'12:00',famille:'R489',est_formation:true,nature_formation:'Pratique',est_test:false,nature_test:'Pratique',creneau_stagiaires:[]};
+ S.edit=id?{id,dup}:null;S.sel=c.creneau_stagiaires.map(x=>x.stagiaire_id);
+ const nat=(n,v)=>`<select id="${n}"><option ${v!='Théorie'?'selected':''}>Pratique</option><option ${v=='Théorie'?'selected':''}>Théorie</option></select>`;
+ $('fc').innerHTML=`<h3>${id&&!dup?'Modifier':'Nouveau'} créneau</h3><div class="grid"><input type="date" id="cj" value="${c.jour}"><input type="time" id="cd" value="${c.debut.slice(0,5)}"><input type="time" id="cf" value="${c.fin.slice(0,5)}">
+  <select id="cfo">${opt(D.f,'id',x=>x.nom,c.formateur_id)}</select><select id="cfa">${FAM.map(r=>`<option ${r==c.famille?'selected':''}>${r}</option>`).join('')}</select><select id="cca"></select></div>
+  <label class="k"><input type="checkbox" id="cef" ${c.est_formation?'checked':''}> Formation</label>${nat('cnf',c.nature_formation)}
+  <label class="k"><input type="checkbox" id="cet" ${c.est_test?'checked':''}> Test</label>${nat('cnt',c.nature_test)}
+  <div id="cso">Salle (théorie) : <select id="csa"><option value="">—</option>${opt(D.sa,'id',x=>x.nom,c.salle_id)}</select></div><div id="cs"></div>
+  <button onclick="saveCr()">Enregistrer</button>${id?'<button class="sec" onclick="S.edit=null;render()">Annuler</button>':''}`;
+ ['cj','cef','cet','cnf','cnt','cca'].forEach(i=>$(i).onchange=()=>raf());$('cfa').onchange=()=>raf(1);
+ raf(1,1);$('cca').value=c.categorie||'';raf(0,1)}
+// Rafraîchit catégories (si famille changée), salle (seulement si Théorie) et stagiaires proposés
+function raf(fam,init){if(!init)S.sel=[...document.querySelectorAll('.cs:checked')].map(x=>x.value);
+ if(fam){const l=D.cat.filter(k=>k.famille==$('cfa').value);$('cca').innerHTML='<option value="">Toutes catégories</option>'+l.map(k=>`<option>${k.nom}</option>`).join('');$('cca').style.display=l.length?'':'none'}
+ const f=$('cef').checked,t=$('cet').checked,th=(f&&$('cnf').value=='Théorie')||(t&&$('cnt').value=='Théorie');$('cso').style.display=th?'':'none';
+ const d=$('cj').value,cat=$('cca').value;
+ const l=D.st.filter(s=>s.famille==$('cfa').value&&(!cat||(s.categories||[]).includes(cat))&&s.date_debut&&s.date_debut<=d&&(!s.date_fin||s.date_fin>=d)&&((f&&s.type!='Test')||(t&&s.type!='Formation')));
+ $('cs').innerHTML='<b>Stagiaires</b><br>'+(l.map(x=>`<label class="k"><input type="checkbox" class="cs" value="${x.id}" ${S.sel.includes(x.id)?'checked':''}> ${x.prenom} ${x.nom}</label>`).join('')||'<small>Aucun stagiaire disponible ce jour.</small>')}
+async function saveCr(){
+ const th=$('cso').style.display!='none',r={jour:$('cj').value,debut:$('cd').value,fin:$('cf').value,formateur_id:$('cfo').value||null,salle_id:th?($('csa').value||null):null,famille:$('cfa').value,categorie:$('cca').value||null,
+  est_formation:$('cef').checked,nature_formation:$('cef').checked?$('cnf').value:null,est_test:$('cet').checked,nature_test:$('cet').checked?$('cnt').value:null};
+ const sel=[...document.querySelectorAll('.cs:checked')].map(x=>x.value),me=S.edit&&!S.edit.dup?S.edit.id:null;
+ if(r.fin<=r.debut)return alert('Heure de fin invalide.');if(!r.est_formation&&!r.est_test)return alert('Choisissez Formation et/ou Test.');
+ const autres=(await ok(sb.from('creneaux').select('*,creneau_stagiaires(stagiaire_id)').eq('jour',r.jour))).filter(c=>c.id!=me&&c.debut<r.fin&&c.fin>r.debut),cf=[];
+ autres.forEach(c=>{const h=c.debut.slice(0,5)+'-'+c.fin.slice(0,5);if(c.formateur_id&&c.formateur_id==r.formateur_id)cf.push('Formateur déjà pris '+h);
+  if(c.salle_id&&c.salle_id==r.salle_id)cf.push('Salle déjà prise '+h);c.creneau_stagiaires.forEach(x=>{if(sel.includes(x.stagiaire_id))cf.push('Stagiaire déjà pris : '+nomSt(x.stagiaire_id))})});
+ if(cf.length&&!confirm('CONFLITS :\n- '+[...new Set(cf)].join('\n- ')+'\n\nEnregistrer quand même ?'))return;
+ let row;if(me){const cur=D.cr.find(x=>x.id==me),d=await ok(sb.from('creneaux').update(r).eq('id',me).eq('maj_le',cur.maj_le).select());
+  if(!d.length){alert('Ce créneau a été modifié sur un autre poste : rien n\'a été enregistré. Rechargement.');return charger()}row=d[0]}
+ else row=(await ok(sb.from('creneaux').insert(r).select()))[0];
+ await ok(sb.from('creneau_stagiaires').delete().eq('creneau_id',row.id));
+ if(sel.length)await ok(sb.from('creneau_stagiaires').insert(sel.map(s=>({creneau_id:row.id,stagiaire_id:s}))));S.edit=null;charger()}
+
+// ---- Impression (noir et blanc : cadres et libellés, aucune information portée par la couleur) ----
+const typeCr=c=>[c.est_formation&&'Formation '+c.nature_formation,c.est_test&&'Test '+c.nature_test].filter(Boolean).join(' + ');
+const tabPrint=l=>`<table style="width:100%"><tr><th>Heure</th><th>Famille</th><th>Type</th><th>Formateur</th><th>Salle</th><th>Stagiaires</th></tr>`+l.map(c=>`<tr><td>${c.debut.slice(0,5)}–${c.fin.slice(0,5)}</td><td>${c.famille}${c.categorie?' '+c.categorie:''}</td><td>${typeCr(c)}</td><td>${(D.f.find(x=>x.id==c.formateur_id)||{}).nom||'—'}</td><td>${c.salle_id?(D.sa.find(x=>x.id==c.salle_id)||{}).nom:'—'}</td><td>${c.creneau_stagiaires.map(x=>nomSt(x.stagiaire_id)).join(', ')}</td></tr>`).join('')+'</table>';
+function imprimer(f){  // f='' : global ; 'tous' : une page par formateur ; sinon un formateur
+ const fr=d=>d.split('-').reverse().join('/'),sem=`Semaine du ${fr(S.lundi)} au ${fr(add(S.lundi,4))}`;
+ const page=(t,id)=>`<section style="page-break-after:always"><h1>${t}</h1><h3>${sem}</h3>`+JN.map((j,i)=>{const d=add(S.lundi,i),l=D.cr.filter(c=>c.jour==d&&(!id||c.formateur_id==id));
+  return `<h4>${j} ${d.slice(8)}/${d.slice(5,7)}</h4>`+(l.length?tabPrint(l):'<p>Aucun créneau.</p>')}).join('')+'</section>';
+ $('pz').innerHTML=f==''?page('Planning global',''):f=='tous'?D.f.map(x=>page('Planning – '+x.nom,x.id)).join(''):page('Planning – '+D.f.find(x=>x.id==f).nom,f);
+ window.print()}
+
+// ---- Temps réel multi-postes : si un formulaire est ouvert, on prévient au lieu d'écraser la saisie ----
+let tm;sb.channel('adm').on('postgres_changes',{event:'*',schema:'public',table:'signal'},()=>{if(!D.p)return;clearTimeout(tm);tm=setTimeout(()=>{
+ const a=document.activeElement,saisie=a&&/INPUT|SELECT|TEXTAREA/.test(a.tagName)&&a.closest('#fc,#sf'),sf=$('sf');
+ if(S.edit||saisie||(sf&&!sf.hidden)){const b=$('ban');if(b)b.hidden=false}else charger()},400)}).subscribe();
+init();
+</script></body></html>
