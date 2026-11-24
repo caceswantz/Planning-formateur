@@ -1,0 +1,27 @@
+/* Style commun : sobre, mobile-first, contrastes forts */
+body{font:18px/1.4 system-ui,sans-serif;margin:0;background:#f4f5f7;color:#111}
+main{max-width:1100px;margin:auto;padding:12px}
+h1{font-size:1.5em;margin:.4em 0}h2{font-size:1.25em;margin:.2em 0 .6em}h3{margin:1em 0 .4em}
+button,input,select,textarea{font:inherit;padding:11px;border-radius:10px;border:1px solid #888;margin:3px}
+button{background:#1d4ed8;color:#fff;border:0;min-height:46px;cursor:pointer}
+button.sec{background:#fff;color:#111;border:1px solid #888}button.del{background:#b91c1c}
+.card{background:#fff;border-radius:14px;padding:14px;margin:12px 0;border-left:10px solid #1d4ed8;box-shadow:0 1px 3px #0003}
+.h{font-size:1.5em;font-weight:700}.tag{display:inline-block;background:#e5e7eb;border-radius:8px;padding:2px 8px;margin:2px}
+.warn{background:#fef3c7;border:1px solid #d97706;padding:2px 8px;border-radius:8px;font-size:.85em}
+.nav{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:6px 0}.nav button{flex:1;min-width:90px}
+.menu{position:sticky;top:0;background:#f4f5f7;padding:6px 0;z-index:5;border-bottom:2px solid #ccc}
+.leg{color:#555;font-size:.85em;margin:6px 0}
+.tw{overflow-x:auto;margin:6px 0}
+table{border-collapse:collapse;width:100%;background:#fff}td,th{border:1px solid #bbb;padding:8px;text-align:left}
+tr:nth-child(even) td{background:#f8fafc}
+table.fam th{border-top:6px solid var(--fc);background:#f1f5f9}
+td.j{text-align:center;cursor:pointer;min-width:62px;font-weight:600}td.j.on{background:#dbeafe!important}td.off{background:#e5e7eb!important;text-align:center;color:#777}
+label.k{display:inline-block;margin:4px 10px 4px 0}
+.grid{display:grid;gap:6px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+#pop{position:fixed;inset:0;background:#0007;display:flex;align-items:center;justify-content:center;z-index:50}#pop[hidden]{display:none}
+.pb{background:#fff;border-radius:14px;padding:16px;width:min(92vw,360px)}.pb button{margin:4px 0}
+/* Badges famille / catégorie (lisibles de loin, repères par texte et cadre, pas seulement par la couleur) */
+.fb{display:inline-block;color:#fff;font-weight:700;border-radius:8px;padding:2px 12px;font-size:1.1em}
+.cb{display:inline-block;border:3px solid #111;border-radius:8px;padding:0 10px;font-weight:700;font-size:1.1em;margin-left:6px;background:#fff}
+.sc{display:inline-block;border:2px solid #111;border-radius:6px;padding:0 6px;margin-left:6px;font-weight:700;background:#fff;font-size:.9em}
+.tag{font-size:1.05em;padding:4px 10px}
