@@ -1,0 +1,34 @@
+<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Planning formateurs</title><link rel="stylesheet" href="style.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.58.0/dist/umd/supabase.js"></script><script src="config.js"></script></head>
+<body><main id="app"></main><script>
+// Page formateurs (lecture seule). Rien n'est affiché tant qu'un nom n'est pas touché ; le code est vérifié côté serveur.
+const sb=supabase.createClient(SUPABASE_URL,SUPABASE_ANON_KEY), app=document.getElementById('app');
+let code=sessionStorage.code||'', fid='', jour=iso(new Date());   // fid volontairement NON mémorisé : écran vide à l'ouverture
+function iso(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')}
+const esc=x=>String(x).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function decaler(n){const d=new Date(jour+'T12:00');d.setDate(d.getDate()+n);jour=iso(d);go()}
+function msg(t){app.innerHTML=`<div class="card h">${t}</div><button class="sec" onclick="sessionStorage.clear();location.reload()">Retour</button>`}
+function erreur(e){const m=e.message||'';
+  if(m.includes('ferme'))return msg('Planning fermé pour le moment.');
+  if(m.includes('desactive'))return msg('Ce planning est désactivé.');
+  if(m.includes('code')){sessionStorage.clear();code='';return ecranCode('Code incorrect')}
+  msg('Erreur de connexion.')}
+function ecranCode(err=''){app.innerHTML=`<h1>Planning</h1><p class="warn" ${err?'':'hidden'}>${err}</p>
+ <input id="c" type="password" placeholder="Code d'accès" style="width:100%;box-sizing:border-box"><button onclick="code=document.getElementById('c').value;sessionStorage.code=code;go()" style="width:100%">Entrer</button>`}
+async function go(){
+  if(!code)return ecranCode();
+  const l=await sb.rpc('liste_formateurs',{p_code:code});if(l.error)return erreur(l.error);
+  const noms=l.data.map(f=>`<button class="${f.id==fid?'':'sec'}" style="font-size:1.2em;${f.actif?'':'opacity:.4'}" ${f.actif?'':'disabled'} onclick="fid='${f.id}';go()">${f.nom}</button>`).join('');
+  if(!fid){app.innerHTML=`<h1>Choisissez un formateur</h1>${noms}`;return}
+  const{data,error}=await sb.rpc('planning_jour',{p_code:code,p_formateur:fid,p_jour:jour});if(error){fid='';return erreur(error)}
+  const lib=new Date(jour+'T12:00').toLocaleDateString('fr-FR',{weekday:'long',day:'numeric',month:'long'});
+  app.innerHTML=`<div>${noms}</div><div class="nav"><button onclick="decaler(-1)">◀ Hier</button><button onclick="jour=iso(new Date());go()">Aujourd'hui</button><button onclick="decaler(1)">Demain ▶</button>
+   <input type="date" value="${jour}" onchange="jour=this.value;go()"></div><h1>${lib}</h1>`+
+   (data.length?data.map(c=>{const ty=[c.est_formation&&'Formation '+c.nature_formation,c.est_test&&'Test '+c.nature_test].filter(Boolean).join(' + ');
+    return `<div class="card ${c.est_test&&!c.est_formation?'test':''}"><div class="h">${c.debut.slice(0,5)} – ${c.fin.slice(0,5)} · ${c.famille}${c.categorie?' '+c.categorie:''}</div>
+    <div>${ty}${c.salle?' · <b>'+c.salle+'</b>':''}</div><div>${c.stagiaires.map(s=>`<span class="tag">${esc(s)}</span>`).join('')}</div>${c.consigne?`<div class="warn"><b>Consigne :</b> ${esc(c.consigne)}</div>`:''}</div>`}).join(''):'<p>Aucun créneau ce jour.</p>')}
+// Temps réel : chaque modification incrémente "signal" => on recharge l'affichage
+sb.channel('ping').on('postgres_changes',{event:'*',schema:'public',table:'signal'},()=>{if(code)go()}).subscribe();
+go();
+</script></body></html>
