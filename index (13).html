@@ -1,0 +1,68 @@
+<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Planning formateurs</title><link rel="stylesheet" href="style.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.58.0/dist/umd/supabase.js"></script><script src="config.js"></script></head>
+<body><main id="app"></main><script>
+// Page formateurs (lecture seule). Rien n'est affiché tant qu'un nom n'est pas touché ; le code est vérifié côté serveur.
+const sb=supabase.createClient(SUPABASE_URL,SUPABASE_ANON_KEY), app=document.getElementById('app');
+let code=sessionStorage.code||'', fid='', jour=iso(new Date()), vue='plan';   // fid volontairement NON mémorisé : écran vide à l'ouverture
+function iso(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')}
+const FC={R482:'#ea580c',R484:'#2563eb',R485:'#16a34a',R486:'#9333ea',R489:'#dc2626',R490:'#0891b2'};   // couleur par famille
+// Badges de nature : libellé complet + icône + couleur (orange = PRATIQUE, bleu = THÉORIE)
+const natB=n=>n=='Théorie'?'<span class="bd theo"><span class="ic">📖</span>THÉORIE</span>':n=='Pratique'?'<span class="bd pra"><span class="ic">🔧</span>PRATIQUE</span>':'';
+const typeB=c=>[c.est_formation&&`<span class="ty">Formation</span>${natB(c.nature_formation)}`,c.est_test&&`<span class="ty">Test</span>${natB(c.nature_test)}`].filter(Boolean).join('<span class="ty"> + </span>');
+const esc=x=>String(x).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function decaler(n){const d=new Date(jour+'T12:00');d.setDate(d.getDate()+n);jour=iso(d);go()}
+function msg(t){app.innerHTML=`<div class="card h">${t}</div><button class="sec" onclick="sessionStorage.clear();location.reload()">Retour</button>`}
+function erreur(e){const m=e.message||'';
+  if(m.includes('ferme'))return msg('Planning fermé pour le moment.');
+  if(m.includes('desactive'))return msg('Ce planning est désactivé.');
+  if(m.includes('code')){sessionStorage.clear();code='';return ecranCode('Code incorrect')}
+  msg('Erreur de connexion.')}
+function ecranCode(err=''){app.innerHTML=`<h1>Planning</h1><p class="warn" ${err?'':'hidden'}>${err}</p>
+ <input id="c" type="password" placeholder="Code d'accès" style="width:100%;box-sizing:border-box"><button onclick="code=document.getElementById('c').value;sessionStorage.code=code;go()" style="width:100%">Entrer</button>`}
+async function go(){
+  if(!code)return ecranCode();
+  const l=await sb.rpc('liste_formateurs',{p_code:code});if(l.error)return erreur(l.error);
+  const noms=l.data.map(f=>`<button class="${f.id==fid?'':'sec'}" style="font-size:1.2em;${f.actif?'':'opacity:.4'}" ${f.actif?'':'disabled'} onclick="fid='${f.id}';go()">${f.nom}</button>`).join('');
+  if(!fid){app.innerHTML=`<h1>Choisissez un formateur</h1>${noms}`;return}
+  if(vue=='stag')return vueStag(noms);
+  const{data,error}=await sb.rpc('planning_jour',{p_code:code,p_formateur:fid,p_jour:jour});if(error){fid='';return erreur(error)}
+  // Charge du jour (règles : 6 UT pratique, 7 UT total, 12 candidats par session de théorie) ; affichée en rouge si dépassée
+  const ch=(await sb.rpc('charge_jour',{p_code:code,p_formateur:fid,p_jour:jour})).data,u=n=>String(Math.round(n*100)/100).replace('.',',');
+  const bandeau=ch?(()=>{const m=[],ss=ch.sessions||[];if(ch.tot>ch.max_total)m.push(`${u(ch.tot)} UT programmées, limite ${u(ch.max_total)}`);if(ch.pra>ch.max_pratique)m.push(`${u(ch.pra)} UT de pratique, limite ${u(ch.max_pratique)}`);
+   ss.forEach(x=>m.push(`Session de théorie ${x.famille} (${String(x.debut).slice(0,5)}) : ${x.nb} candidats, limite ${ch.max_candidats}`));
+   return (m.length?`<div class="warn" style="font-size:1.1em;border:3px solid #b91c1c;padding:10px;margin:8px 0"><b>⚠ ATTENTION – LIMITE DÉPASSÉE</b><br>${m.join('<br>')}</div>`:'')+(ch.tot>0?`<p><b>Charge du jour :</b> ${u(ch.tot)} / ${u(ch.max_total)} UT, dont pratique ${u(ch.pra)} / ${u(ch.max_pratique)} UT</p>`:'')})():'';
+  const lib=new Date(jour+'T12:00').toLocaleDateString('fr-FR',{weekday:'long',day:'numeric',month:'long'});
+  app.innerHTML=`<div>${noms}</div>${onglets()}<div class="nav"><button onclick="decaler(-1)">◀ Hier</button><button onclick="jour=iso(new Date());go()">Aujourd'hui</button><button onclick="decaler(1)">Demain ▶</button>
+   <input type="date" value="${jour}" onchange="jour=this.value;go()"></div><h1>${lib}</h1>${bandeau}`+
+   (data.length?data.map(c=>{
+    const st=c.stagiaires.map(x=>{const m=x.match(/^(.*?)(?: \(([^)]*)\))?$/);return{n:m[1],c:m[2]?m[2].split(', '):[]}}),cats=c.categorie?[c.categorie]:[...new Set(st.flatMap(x=>x.c))];
+    return `<div class="card" style="border-left-color:${FC[c.famille]}"><div class="h">${c.debut.slice(0,5)} – ${c.fin.slice(0,5)}</div>
+    <div style="margin:6px 0"><span class="fb" style="background:${FC[c.famille]}">${c.famille}</span>${cats.length?`<span class="cb">Catégorie ${esc(cats.join(' · '))}</span>`:''}</div>
+    <div style="margin:8px 0">${typeB(c)}${c.salle?' · <b>'+esc(c.salle)+'</b>':''}</div><div>${st.map(x=>`<span class="tag">${esc(x.n)}${x.c.map(k=>`<span class="sc">Cat. ${esc(k)}</span>`).join('')}</span>`).join('')}</div>${c.consigne?`<div class="consigne"><b>📌 CONSIGNE :</b> ${esc(c.consigne)}</div>`:''}</div>`}).join(''):'<p>Aucun créneau ce jour.</p>')}
+// ---- Vue globale des stagiaires (lecture seule, même présentation que l'impression admin) + coche « présent » ----
+const FAMS=['R482','R484','R485','R486','R489','R490'],JN=['Lun','Mar','Mer','Jeu','Ven'];
+const onglets=()=>`<div class="nav"><button class="${vue=='plan'?'':'sec'}" onclick="vue='plan';go()">📅 Planning du jour</button><button class="${vue=='stag'?'':'sec'}" onclick="vue='stag';go()">👥 Stagiaires de la semaine</button></div>`;
+const addj=(s,n)=>{const d=new Date(s+'T12:00');d.setDate(d.getDate()+n);return iso(d)};
+const lundiDe=s=>addj(s,-((new Date(s+'T12:00').getDay()+6)%7));
+const fr=d=>d?d.split('-').reverse().join('/').slice(0,5):'—';
+async function vueStag(noms){const lun=lundiDe(jour),ven=addj(lun,4);
+  const{data,error}=await sb.rpc('stagiaires_semaine',{p_code:code,p_formateur:fid,p_lundi:lun});if(error){if((error.message||'').includes('stagiaires_semaine'))return msg('Fonction manquante : exécuter migration_v10.sql dans Supabase.');fid='';return erreur(error)}
+  const T=data.today,rows=data.rows,enPlace=(s,d)=>s.date_debut&&d>=s.date_debut&&(!s.date_fin||d<=s.date_fin)&&((s.programme||{})[d]||s.type)!='Absent';
+  const auj=T>=lun&&T<=ven,att=auj?rows.filter(s=>enPlace(s,T)):[],pres=att.filter(s=>s.present).length;
+  const hh=s=>s.present_a?new Date(s.present_a).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}):'';
+  const CG='<colgroup><col style="width:34%"><col style="width:22%"><col style="width:8%"><col style="width:16%"><col style="width:10%"><col style="width:10%"></colgroup>';
+  const tabs=FAMS.map(f=>{const l=rows.filter(s=>s.famille==f);if(!l.length)return '';
+   return `<h3>${f}</h3><div class="tw"><table class="fam cp" style="--fc:${FC[f]}">${CG}<tr><th>Stagiaire</th><th>Entreprise</th><th>Fam.</th><th>Catégories</th><th>Début</th><th>Fin</th></tr>`+l.map(s=>{
+     const ici=auj&&enPlace(s,T),nm=`<b>${esc(s.prenom)} ${esc(s.nom)}</b>`;
+     const c1=ici?`<td class="pn ${s.present?'on':''}" onclick="presence('${s.id}',${!s.present},'${esc(s.prenom+' '+s.nom).replace(/'/g,"\\'")}')">${s.present?'☑':'☐'} ${nm}<br><span class="pr ${s.present?'ok':''}">${s.present?'PRÉSENT '+hh(s):'à confirmer'}</span></td>`:`<td>${nm}</td>`;
+     return `<tr>${c1}<td>${esc(s.entreprise||'—')}</td><td>${f}</td><td>${(s.categories||[]).map(esc).join(', ')||'—'}</td><td>${fr(s.date_debut)}</td><td>${fr(s.date_fin)}</td></tr>`}).join('')+`</table></div>`}).join('');
+  app.innerHTML=`<div>${noms}</div>${onglets()}<div class="nav"><button onclick="decaler(-7)">◀ Semaine préc.</button><button onclick="jour=iso(new Date());go()">Cette semaine</button><button onclick="decaler(7)">Semaine suiv. ▶</button></div>
+   <h1>Stagiaires – semaine du ${fr(lun)} au ${fr(ven)}</h1>${auj&&att.length?`<p><b>Présents aujourd'hui : ${pres} / ${att.length}</b> <small>— touchez le nom d'un stagiaire pour confirmer sa présence.</small></p>`:''}${tabs||'<p>Aucun stagiaire cette semaine.</p>'}`}
+async function presence(id,v,nom){if(!v&&!confirm('Retirer la présence de '+nom+' ?'))return;
+  const{error}=await sb.rpc('marquer_presence',{p_code:code,p_formateur:fid,p_stagiaire:id,p_present:v});
+  if(error){if((error.message||'').includes('hors_periode'))alert("Ce stagiaire n'est pas en période aujourd'hui.");else return erreur(error)}go()}
+// Temps réel : chaque modification incrémente "signal" => on recharge l'affichage
+sb.channel('ping').on('postgres_changes',{event:'*',schema:'public',table:'signal'},()=>{if(code)go()}).subscribe();
+go();
+</script></body></html>
