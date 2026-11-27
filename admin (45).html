@@ -1,0 +1,696 @@
+<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Admin planning</title><link rel="stylesheet" href="style.css?v=41"><style>#pz{display:none}@page{size:A4;margin:8mm}@media print{main{display:none}#pz{display:block}body{background:#fff;color:#000;font-size:9pt;line-height:1.2}h1{font-size:12pt;margin:0 0 2mm}h3{font-size:10pt;margin:3mm 0 1mm}h4{margin:2mm 0 1mm;font-size:9pt}table,table.cp{font-size:8pt;break-inside:avoid}td,th{border:1px solid #000;padding:1px 3px}tr:nth-child(even) td{background:none}tr.tot td{background:#fff!important;border-top:2px solid #000}.np,.warn{display:none}.card{box-shadow:none;border:1px solid #000;padding:2mm}table.fam th{background:#fff;border-top:2px solid #000}td.j{min-width:0}td.j.on{background:#ddd!important}}</style>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.58.0/dist/umd/supabase.js"></script><script src="config.js"></script><style id="v52">
+/* v52 — vue globale des stagiaires : même présentation, lignes plus serrées ; sous-total par date de fin */
+.gl td,.gl th{padding:1px 6px!important;line-height:1.15!important}
+.gl button{min-height:22px!important;width:22px;min-width:0!important;padding:0!important;margin:0 1px!important;font-size:12px}.gl td.np{white-space:nowrap}
+.gl td:nth-child(3),.gl td:nth-child(5),.gl td:nth-child(6),.gl td:nth-child(7),.gl th:nth-child(3),.gl th:nth-child(5),.gl th:nth-child(6),.gl th:nth-child(7),.gl tr.tot td:nth-child(2){text-align:center}
+.gl tr.tot td:nth-child(1){text-align:left}.gl .warn{font-size:10px;line-height:1.1}.tw:has(.gl){margin:2px 0 4px}
+h3.gh{font-size:16px;line-height:1.2}h3.gh button{min-height:22px!important;padding:0 10px!important;font-size:12px!important;margin-left:8px;vertical-align:middle}
+.gl tr.sp td{height:5px!important}
+.gl tr.sf td{font-size:11px;font-weight:700;padding:0 6px!important;border-top:1px dashed #000;background:#f1f5f9;line-height:1.1!important}
+.gl tr.sf td:first-child{text-align:right}
+h3.gh{margin:6px 0 2px}h2.gd{font-size:15px;margin:12px 0 2px;padding-bottom:1px;border-bottom:3px solid #000}.apv h2.gd{font-size:10pt;margin:2mm 0 .5mm;border-bottom:2px solid #000}.tw:has(.gl){margin-bottom:4px}
+.apv h3.gh{margin:1.5mm 0 .5mm}.apv .gl td,.apv .gl th{padding:0 3px!important}
+.apv .gl tr.sf td{background:#fff;font-size:7pt;border-top:1px dashed #000}
+</style></head>
+<body><main id="app"></main><div id="pz"></div><div id="pop" hidden></div><script>
+// Administration v2. Rubriques : Planning, Stagiaires, Formateurs, Paramètres. Accès protégé par Supabase Auth + RLS.
+const sb=supabase.createClient(SUPABASE_URL,SUPABASE_ANON_KEY), app=document.getElementById('app');
+const FAM=['R482','R484','R485','R486','R489','R490'], JN=['Lun','Mar','Mer','Jeu','Ven'], $=id=>document.getElementById(id);
+const FC={R482:'#ea580c',R484:'#2563eb',R485:'#16a34a',R486:'#9333ea',R489:'#dc2626',R490:'#0891b2'};   // couleur de chaque famille
+const fcs=x=>FC[x]?`style="border-left:10px solid ${FC[x]}"`:'';
+const dayType=(s,d)=>(s.programme||{})[d]||s.type;   // activité du jour : Formation / Test / Les deux / Absent
+const dEnPlace=(s,d)=>s.date_debut&&d>=s.date_debut&&(!s.date_fin||d<=s.date_fin)&&dayType(s,d)!='Absent';
+const abr=t=>({'Les deux':'F+T',Test:'Test',Formation:'Form.'})[t]||'';
+// Badges de nature : libellé complet + icône + couleur (orange = PRATIQUE, bleu = THÉORIE)
+const natB=n=>n=='Théorie'?'<span class="bd theo"><span class="ic">📖</span>THÉORIE</span>':n=='Pratique'?'<span class="bd pra"><span class="ic">🔧</span>PRATIQUE</span>':'';
+const typeB=c=>[c.est_formation&&`<span class="ty">Formation</span>${natB(c.nature_formation)}`,c.est_test&&`<span class="ty">Test</span>${natB(c.nature_test)}`].filter(Boolean).join('<span class="ty"> + </span>');
+const T={formateurs:'f',salles:'sa',stagiaires:'st',creneaux:'cr'};   // table -> clé du cache D
+const iso=d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+const add=(s,n)=>{const d=new Date(s+'T12:00');d.setDate(d.getDate()+n);return iso(d)};
+const lundiDe=s=>add(s,-((new Date(s+'T12:00').getDay()+6)%7));
+let S={lundi:lundiDe(iso(new Date())),page:'planning',fam:'R482',edit:null,sel:[]}, D={};
+const ok=async q=>{const r=await q;if(r.error){alert(r.error.message);throw r.error}return r.data};
+const opt=(a,v,l,sel)=>a.map(x=>`<option value="${x[v]}" ${x[v]==sel?'selected':''}>${l(x)}</option>`).join('');
+const nomSt=id=>{const s=D.st.find(x=>x.id==id);return s?s.prenom+' '+s.nom+((s.categories||[]).length?' ('+s.categories.join(', ')+')':''):'?'};
+const catsDe=c=>[...new Set([c.categorie,...c.creneau_stagiaires.flatMap(x=>(D.st.find(s=>s.id==x.stagiaire_id)||{}).categories||[])].filter(Boolean))];
+const tagSt=(id,c,x)=>{const s=D.st.find(x=>x.id==id)||{prenom:'?',nom:''};return `<span class="tag">${s.prenom} ${s.nom}${(s.categories||[]).map(k=>`<span class="sc">Cat. ${k}</span>`).join('')}${c&&estPr(c)?`<span class="sc">${fmt(+x.ut_prat||0)} UT</span>`:''}</span>`};
+const esc=t=>String(t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const wk=()=>`<div class="nav"><button class="sec" onclick="S.lundi=add(S.lundi,-7);charger()">◀ Précédente</button><b>Semaine du ${S.lundi.split('-').reverse().join('/')}</b><button class="sec" onclick="S.lundi=add(S.lundi,7);charger()">Suivante ▶</button><input type="date" onchange="S.lundi=lundiDe(this.value);charger()"></div>`;
+
+async function init(){const{data}=await sb.auth.getSession();data.session?charger():login()}
+function login(){app.innerHTML=`<h1>Admin</h1><input id="e" type="email" placeholder="E-mail"><input id="p" type="password" placeholder="Mot de passe"><button onclick="connexion()">Connexion</button>`}
+async function connexion(){const{error}=await sb.auth.signInWithPassword({email:$('e').value,password:$('p').value});error?alert(error.message):charger()}
+async function charger(){
+ const q=await Promise.all([sb.from('parametres').select('*').single(),sb.from('formateurs').select('*').order('nom'),sb.from('salles').select('*').order('nom'),
+  sb.from('stagiaires').select('*').order('nom'),sb.from('categories').select('*').order('ordre'),
+  sb.from('creneaux').select('*,creneau_stagiaires(stagiaire_id,ut_prat,ut_theo)').gte('jour',S.lundi).lte('jour',add(S.lundi,4)).order('jour').order('debut'),sb.from('bareme_ut').select('*'),sb.from('options_famille').select('*').order('nom'),sb.from('stagiaire_options').select('*'),sb.from('limites_ut').select('*').single(),sb.from('habilitations').select('*'),sb.from('creneau_stagiaires').select('stagiaire_id,creneaux!inner(id,jour,famille,categorie)').eq('creneaux.est_test',true).eq('creneaux.nature_test','Pratique').limit(5000),sb.from('presences').select('*').gte('jour',S.lundi).lte('jour',add(S.lundi,4)),sb.from('formations_div').select('*').order('nom'),sb.from('sessions_div').select('*,sessions_div_stagiaires(*)').lte('jour_debut',add(S.lundi,4)).gte('jour_fin',S.lundi).order('jour_debut')]);
+ const e=q.find(x=>x.error);if(e)return alert('Accès refusé ou migration manquante : '+e.error.message);
+ D={p:q[0].data,f:q[1].data,sa:q[2].data,st:q[3].data,cat:q[4].data,cr:q[5].data,bar:q[6].data,opt:q[7].data,so:q[8].data,lim:q[9].data,hab:q[10].data,prat:q[11].data||[],pres:q[12].data||[],fd:q[13].data||[],sd:q[14].data||[]};render()}
+// Suggestions d'entreprises : celles déjà saisies, par ordre alphabétique
+function listeEnt(){const m={};(D.st||[]).forEach(x=>{const e=(x.entreprise||'').trim();if(!e)return;const k=nz(e);(m[k]=m[k]||{n:0,t:{}}).n++;m[k].t[e]=(m[k].t[e]||0)+1});
+ const o=Object.values(m).map(v=>Object.entries(v.t).sort((a,b)=>b[1]-a[1])[0][0]).sort((a,b)=>a.localeCompare(b,'fr',{sensitivity:'base'}));
+ const dl=(id,l)=>{let d=document.getElementById(id);if(!d){d=document.createElement('datalist');d.id=id;document.body.appendChild(d)}d.innerHTML=l.map(e=>`<option value="${esc(e)}">`).join('')};
+ dl('lent',o);
+ const uniq=k=>{const m={};(D.st||[]).forEach(x=>{const v=(x[k]||'').trim();if(v&&!m[nz(v)])m[nz(v)]=v});return Object.values(m).sort((a,b)=>a.localeCompare(b,'fr',{sensitivity:'base'}))};
+ dl('lnom',uniq('nom'));dl('lpre',uniq('prenom'))}
+function render(){listeEnt();
+ app.innerHTML=`<div class="nav menu">${[['planning','Planning'],['stagiaires','Stagiaires'],['formateurs','Formateurs'],['params','Paramètres']].map(([k,l])=>`<button class="${S.page==k?'':'sec'}" onclick="S.page='${k}';S.edit=null;render()">${l}</button>`).join('')}<button class="sec" onclick="sb.auth.signOut().then(login)">Déconnexion</button><small style="align-self:center;opacity:.6">v56</small></div>
+ <p id="ban" class="warn" hidden onclick="charger()">Données modifiées sur un autre poste — toucher pour actualiser</p><div id="pg"></div>`;
+ ({planning:pPlanning,stagiaires:pStag,formateurs:pForm,params:pParams})[S.page]();if(S.page!='stagiaires')foldAll();else pDivCard()}
+
+// ---- Mises à jour protégées : refusées si quelqu'un d'autre a modifié l'élément entre-temps (colonne maj_le) ----
+async function upd(t,id,v){const row=D[T[t]].find(x=>x.id==id);
+ const d=await ok(sb.from(t).update(v).eq('id',id).eq('maj_le',row.maj_le).select());
+ if(!d.length)alert('Cet élément a été modifié sur un autre poste : vos changements n\'ont PAS été enregistrés. Les données sont rechargées.');charger()}
+async function sup(t,id){if(confirm('Supprimer ?')){await ok(sb.from(t).delete().eq('id',id));charger()}}
+async function renom(t,id){const n=prompt('Nom',D[T[t]].find(x=>x.id==id).nom);if(n)upd(t,id,{nom:n})}
+async function ajout(t){const n=prompt('Nom');if(n){await ok(sb.from(t).insert({nom:n}));charger()}}
+
+// ---- Moteur UT (tests uniquement) ----
+// Pratique : coût figé par candidat (creneau_stagiaires.ut_prat = UT de la catégorie + options, calculé à l'enregistrement du créneau).
+// Théorie : 1 UT par SESSION (= un créneau de théorie d'une recommandation), quel que soit le nombre de candidats ; valeur figée dans creneaux.ut_session.
+const fmt=n=>String(Math.round(n*100)/100).replace('.',',');
+const frc=d=>d?d.split('-').reverse().slice(0,2).join('/'):'—';
+const bar=(f,c)=>{const b=D.bar.find(x=>x.famille==f&&x.categorie==(c||''));return b?+b.ut_pratique:0};
+const optUt=(sid,c)=>D.so.filter(o=>o.stagiaire_id==sid&&o.categorie==c).reduce((a,o)=>a+(+(D.opt.find(x=>x.id==o.option_id)||{}).ut||0),0);
+const utPrat=(s,cat)=>s.theorie_seule?0:(cat?[cat]:(s.categories&&s.categories.length?s.categories:[''])).reduce((a,c)=>a+bar(s.famille,c)+optUt(s.id,c),0);   // UT pratique : catégorie(s) + 0,5 par option cochée
+const isTest=s=>s.type!='Formation'||Object.values(s.programme||{}).some(v=>v=='Test'||v=='Les deux');
+const utTxt=s=>s.theorie_seule?'théo.':isTest(s)?fmt(utPrat(s)):'-';       // « - » pour un stagiaire en formation uniquement
+const estTh=c=>c.est_test&&c.nature_test=='Théorie', estPr=c=>c.est_test&&c.nature_test=='Pratique';
+const utCr=c=>estPr(c)?c.creneau_stagiaires.reduce((a,x)=>a+(+x.ut_prat||0),0):estTh(c)?(+c.ut_session||0):0;
+const nomF=c=>(D.f.find(x=>x.id==c.formateur_id)||{}).nom||'<i>formateur à affecter</i>';
+// Charge d'un testeur un jour donné : total, dont pratique
+function charge(fid,d,cr){let tot=0,pra=0;
+ cr.filter(c=>c.formateur_id==fid&&c.jour==d&&c.est_test).forEach(c=>{const u=utCr(c);tot+=u;if(estPr(c))pra+=u});return{tot,pra}}
+// Messages de dépassement (admin, temps réel) : 6 UT pratique, 7 UT total, 12 candidats par session de théorie
+function alertes(fid,d){const L=D.lim,g=charge(fid,d,D.cr),m=[];
+ if(g.tot>+L.max_total)m.push(`${fmt(g.tot)} UT programmées, limite ${fmt(+L.max_total)}`);
+ if(g.pra>+L.max_pratique)m.push(`${fmt(g.pra)} UT de pratique, limite ${fmt(+L.max_pratique)}`);
+ D.cr.filter(c=>c.formateur_id==fid&&c.jour==d&&estTh(c)&&c.creneau_stagiaires.length>+L.max_candidats).forEach(c=>m.push(`session de théorie ${c.famille} (${c.debut.slice(0,5)}) : ${c.creneau_stagiaires.length} candidats, limite ${L.max_candidats}`));
+ return m}
+const depasse=fid=>[0,1,2,3,4].some(i=>alertes(fid,add(S.lundi,i)).length);
+// Jauge de charge (Planning) : « X / 7 UT, dont pratique Y / 6 UT » — aucune mention de candidats
+function chargeCard(){const L=D.lim,r=[],JLg=['Lundi','Mardi','Mercredi','Jeudi','Vendredi'];
+ [0,1,2,3,4].forEach(i=>{const d=add(S.lundi,i),rows=[];D.f.forEach(f=>{const g=charge(f.id,d,D.cr),al=alertes(f.id,d);
+  if(g.tot>0||D.cr.some(c=>c.formateur_id==f.id&&c.jour==d&&c.est_test))
+   rows.push(`<tr><td>${al.length?'🔴 ':''}<b>${f.nom}</b></td><td><b>${fmt(g.tot)} / ${fmt(+L.max_total)} UT</b>, dont pratique ${fmt(g.pra)} / ${fmt(+L.max_pratique)} UT${al.length?`<br><span class="warn">DÉPASSÉ : ${al.join(' · ')}</span>`:''}</td></tr>`)});
+  if(rows.length)r.push(`<tr><th colspan="2" style="text-align:left;background:#e2e8f0">${JLg[i]} ${frc(d)}</th></tr>`+rows.join(''))});
+ return `<div class="card" data-fold="pl:charge"><h3>Charge des testeurs (tests)</h3>${r.length?`<div class="tw"><table>${r.join('')}</table></div>`:'<small>Aucun test cette semaine.</small>'}</div>`}
+
+// ---- Contrôles avant enregistrement d'un créneau (création, modification, déplacement) ----
+// Conflits : même jour, horaires qui se chevauchent (comparaison sur HH:MM)
+// Une même personne inscrite dans 2 familles = 2 fiches stagiaires : on la reconnaît à son nom + prénom
+const normP=x=>x?((x.nom||'')+'|'+(x.prenom||'')).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/\s+/g,' ').trim():'';
+const memeP=(i,j)=>{if(i==j)return true;const a=D.st.find(x=>x.id==i),b=D.st.find(x=>x.id==j);return !!a&&!!b&&normP(a)==normP(b)};
+// Doute : même entreprise + nom/prénom presque identiques (faute, accent, tiret, nom et prénom inversés) → avertissement avec confirmation
+const nz=t=>(t||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+function lev(a,b){const m=[...Array(a.length+1)].map((_,i)=>[i]);for(let j=1;j<=b.length;j++)m[0][j]=j;for(let i=1;i<=a.length;i++)for(let j=1;j<=b.length;j++)m[i][j]=Math.min(m[i-1][j]+1,m[i][j-1]+1,m[i-1][j-1]+(a[i-1]==b[j-1]?0:1));return m[a.length][b.length]}
+function proche(i,j){if(memeP(i,j))return false;const a=D.st.find(x=>x.id==i),b=D.st.find(x=>x.id==j);if(!a||!b)return false;
+ const ea=nz(a.entreprise),eb=nz(b.entreprise);if(!ea||ea!=eb)return false;
+ const d=(x,y)=>lev(nz(x.nom)+' '+nz(x.prenom),nz(y.nom)+' '+nz(y.prenom)),inv=lev(nz(a.nom)+' '+nz(a.prenom),nz(b.prenom)+' '+nz(b.nom));
+ return Math.min(d(a,b),inv)<=2}
+function conflits(r,sel,me,jourAll){const cf=[],a=r.debut.slice(0,5),b=r.fin.slice(0,5);
+ jourAll.filter(c=>c.id!=me&&c.debut.slice(0,5)<b&&c.fin.slice(0,5)>a).forEach(c=>{const h=c.debut.slice(0,5)+'-'+c.fin.slice(0,5);
+  const occ=c.creneau_stagiaires.length>0||c.previsionnel;      // un créneau vidé (candidat supprimé) est « à combler » : il n'occupe plus le testeur ni la salle
+  if(occ&&c.formateur_id&&c.formateur_id==r.formateur_id)cf.push('Formateur déjà pris '+h+(c.previsionnel&&!c.creneau_stagiaires.length?' (créneau prévisionnel : l\'ouvrir et cocher les candidats)':''));
+  if(occ&&c.salle_id&&c.salle_id==r.salle_id)cf.push('Salle déjà prise '+h);
+  c.creneau_stagiaires.forEach(x=>{if(sel.some(i=>memeP(i,x.stagiaire_id)))cf.push('Stagiaire déjà pris : '+nomSt(x.stagiaire_id)+(c.famille!=r.famille?' ('+c.famille+(c.categorie?' '+c.categorie:'')+')':''));else{const q=sel.find(i=>proche(i,x.stagiaire_id));if(q)cf.push('DOUTE, peut-être la même personne (même entreprise, nom proche) : '+nomSt(q)+' / '+nomSt(x.stagiaire_id)+' déjà placé(e) en '+c.famille+(c.categorie?' '+c.categorie:'')+' '+h)}})});
+ return [...new Set(cf)]}
+// Limites : renvoie les blocages (b) et les alertes (a) selon le mode réglé dans Paramètres. rows = [{stagiaire_id,ut_prat}]
+function verifLim(r,sel,me,jourAll,rows){const L=D.lim,res={b:[],a:[]},pousse=(mode,t)=>res[mode=='blocage'?'b':'a'].push(t);
+ if(!r.est_test)return res;
+ if(r.nature_test=='Théorie'&&sel.length>+L.max_candidats)pousse('blocage',`Session de théorie ${r.famille} : ${sel.length} candidats, limite ${L.max_candidats} (dépassement interdit)`);
+ if(!r.formateur_id)return res;
+ const nv={id:me||'nouveau',jour:r.jour,formateur_id:r.formateur_id,est_test:true,nature_test:r.nature_test,ut_session:r.ut_session,creneau_stagiaires:rows};
+ const g=charge(r.formateur_id,r.jour,[...jourAll.filter(c=>c.id!=me),nv]),nom=(D.f.find(x=>x.id==r.formateur_id)||{}).nom;
+ if(g.tot>+L.max_total)pousse(L.mode_total,`${nom} : ${fmt(g.tot)} UT programmées, limite ${fmt(+L.max_total)}`);
+ if(g.pra>+L.max_pratique)pousse('blocage',`${nom} : ${fmt(g.pra)} UT de pratique, limite ${fmt(+L.max_pratique)} (dépassement interdit)`);
+ return res}
+// ---- Règles des tests (pratique) : catégories inscrites, durée = UT, un seul testeur par catégorie ----
+const mins=h=>{const[a,b]=String(h).slice(0,5).split(':');return +a*60+ +b};
+const hm=m=>Math.floor(m/60)+' h '+String(Math.round(m%60)).padStart(2,'0');
+const aCat=(s,c)=>(s.categories||[]).includes(c);
+const catsFam=f=>D.cat.filter(k=>k.famille==f);
+// Durée maximale d'un test pratique = somme des UT des candidats (1 UT = 1 h). Ne s'applique pas à un créneau Formation + Test.
+function dureeMax(r,rows){if(!r.est_test||r.nature_test!='Pratique'||r.est_formation)return '';
+ const u=rows.reduce((a,x)=>a+(+x.ut_prat||0),0);if(u<=0)return '';
+ const mx=Math.round(u*60),du=mins(r.fin)-mins(r.debut);
+ return du>mx?`Durée trop longue : ${fmt(u)} UT = ${hm(mx)} maximum (de ${r.debut.slice(0,5)} à ${hm(mins(r.debut)+mx).replace(' h ',':')} au plus)`:''}
+// Candidats non inscrits dans la catégorie testée
+function bloquantsCat(r,sel){const o=[];if(!r.est_test)return o;const st=sel.map(id=>D.st.find(x=>x.id==id)).filter(Boolean);
+ if(r.nature_test=='Pratique'){const t=st.filter(x=>x.theorie_seule);if(t.length)o.push(`Inscrit(s) en théorie seulement (pas de pratique) : ${t.map(x=>x.prenom+' '+x.nom).join(', ')}`)}
+ if(r.categorie){const k=st.filter(x=>!x.theorie_seule&&!aCat(x,r.categorie));if(k.length)o.push(`Catégorie ${r.famille} ${r.categorie} : non inscrit(s) dans cette catégorie : ${k.map(x=>x.prenom+' '+x.nom).join(', ')}`)}
+ return o}
+// Un seul testeur par catégorie au même moment (sauf catégories « 2 testeurs », ex. R489 cat. 3)
+function conflitCat(r,me,jourAll){if(!r.est_test||!r.formateur_id)return '';
+ const lst=catsFam(r.famille);if(lst.length&&!r.categorie)return '';
+ const k=lst.find(x=>x.nom==r.categorie);if(k&&k.multi_testeurs)return '';
+ const a=r.debut.slice(0,5),b=r.fin.slice(0,5);
+ const c=jourAll.find(c=>c.id!=me&&c.creneau_stagiaires.length&&c.est_test&&c.famille==r.famille&&(c.categorie||'')==(r.categorie||'')&&c.formateur_id&&c.formateur_id!=r.formateur_id&&c.debut.slice(0,5)<b&&c.fin.slice(0,5)>a);
+ return c?`Catégorie ${r.famille}${r.categorie?' '+r.categorie:''} déjà testée par ${nomF(c).replace(/<[^>]+>/g,'')} de ${c.debut.slice(0,5)} à ${c.fin.slice(0,5)} : un seul testeur à la fois sur une même catégorie`:''}
+// Testeurs habilités (Formateurs > Habilitations) : un test ne peut être confié qu'à un testeur habilité pour la catégorie
+const habil=(fid,fam,cat)=>(D.hab||[]).some(h=>h.formateur_id==fid&&h.famille==fam&&(!cat||h.categorie==cat));
+function testeurOk(r){if(!r.est_test||!r.formateur_id)return '';
+ return habil(r.formateur_id,r.famille,r.categorie)?'':`${nomF(r).replace(/<[^>]+>/g,'')} n'est pas testeur habilité en ${r.famille}${r.categorie?' catégorie '+r.categorie:''} (voir Formateurs > Habilitations)`}
+// Créneau à combler : vide (candidat supprimé ou retiré) ou temps libre dans un test pratique
+function trou(c){const n=c.creneau_stagiaires.length;if(!c.est_test&&!c.est_formation)return '';
+ if(!n)return 'CRÉNEAU À COMBLER : plus aucun candidat';
+ if(estPr(c)&&!c.est_formation){const u=c.creneau_stagiaires.reduce((a,x)=>a+(+x.ut_prat||0),0),g=mins(c.fin)-mins(c.debut)-Math.round(u*60);if(u>0&&g>=10)return `TEMPS À COMBLER : ${hm(g)} libre dans ce créneau`}
+ return ''}
+// Règles fixes (non paramétrables) : catégories jamais testées en même temps, même par des testeurs différents ; plafond de candidats par jour
+// Groupes de catégories jamais testées en même temps (toutes familles confondues dans un groupe), même avec des testeurs différents
+const EXCL=[['R489 1A','R489 1B','R485 1','R485 2'],['R482 A','R482 G']];
+// Quotas par jour de test, tous testeurs confondus : en UT (somme des UT pratique) ou en nombre de candidats
+const CAPS=[{nom:'R489 1A/1B + R485 1/2',c:{R489:['1A','1B'],R485:['1','2']},ut:6},{nom:'R484 1/2',c:{R484:['1','2']},cand:8}];
+const cle=(f,k)=>f+' '+k;
+const partners=(f,k)=>k?EXCL.filter(g=>g.includes(cle(f,k))).flatMap(g=>g.filter(x=>x!=cle(f,k))):[];
+function conflitExcl(r,me,jourAll){if(!r.est_test||!r.categorie)return '';const p=partners(r.famille,r.categorie);if(!p.length)return '';
+ const a=r.debut.slice(0,5),b=r.fin.slice(0,5),c=jourAll.find(c=>c.id!=me&&c.creneau_stagiaires.length&&c.est_test&&c.categorie&&p.includes(cle(c.famille,c.categorie))&&c.debut.slice(0,5)<b&&c.fin.slice(0,5)>a);
+ return c?`${r.famille} ${r.categorie} et ${c.famille} ${c.categorie} ne peuvent jamais être testées en même temps (${c.famille} ${c.categorie} déjà placée de ${c.debut.slice(0,5)} à ${c.fin.slice(0,5)}, même avec un autre testeur)`:''}
+const capDe=c=>c.est_test&&c.nature_test=='Pratique'&&c.categorie?CAPS.find(g=>(g.c[c.famille]||[]).includes(c.categorie)):null;
+const r2=x=>Math.round(x*100)/100;
+const candJour=(jourAll,me,g)=>new Set(jourAll.filter(c=>c.id!=me&&capDe(c)===g).flatMap(c=>c.creneau_stagiaires.map(x=>x.stagiaire_id)));
+const utJour=(jourAll,me,g)=>r2(jourAll.filter(c=>c.id!=me&&capDe(c)===g).reduce((a,c)=>a+c.creneau_stagiaires.reduce((b,x)=>b+(+x.ut_prat||0),0),0));
+function plafondJour(r,sel,me,jourAll,rows){const g=capDe(r);if(!g)return '';
+ if(g.ut){const dej=utJour(jourAll,me,g),nv=r2((rows||[]).reduce((a,x)=>a+(+x.ut_prat||0),0));
+  return r2(dej+nv)>g.ut?`Quota de ${g.ut} UT par jour de test pour ${g.nom} (tous testeurs confondus) dépassé : ${fmt(dej)} UT déjà placées + ${fmt(nv)} UT de ce créneau = ${fmt(dej+nv)} UT (reste ${fmt(Math.max(0,g.ut-dej))} UT)`:''}
+ const dej=candJour(jourAll,me,g),tot=new Set([...dej,...sel]);
+ return tot.size>g.cand?`Maximum ${g.cand} candidats par jour de test pour ${g.nom} (tous testeurs confondus) : ${dej.size} déjà placé(s) + ${[...new Set(sel)].filter(x=>!dej.has(x)).length} nouveau(x) = ${tot.size}`:''}
+// Relit les créneaux du jour visé, vérifie règles bloquantes, conflits et limites ; false si refusé (blocage ou confirmation refusée)
+async function verifierEtConfirmer(r,sel,me,rows){
+ const jourAll=await ok(sb.from('creneaux').select('*,creneau_stagiaires(stagiaire_id,ut_prat,ut_theo)').eq('jour',r.jour));
+ if(r.previsionnel&&!sel.length){const c0=conflits(r,sel,me,jourAll).filter(x=>/^Formateur/.test(x));if(c0.length){alert('ENREGISTREMENT REFUSÉ :\n- '+c0.join('\n- '));return false}return true}      // prévisionnel : ni habilitation ni quota, seul le formateur ne peut pas être placé deux fois
+ let dp=[];if(r.est_test&&r.nature_test=='Pratique'&&r.categorie&&sel.length&&!r.rattrapage)dp=(await ok(sb.from('creneau_stagiaires').select('stagiaire_id,creneaux!inner(id,jour,categorie)').in('stagiaire_id',sel).eq('creneaux.famille',r.famille).eq('creneaux.est_test',true).eq('creneaux.nature_test','Pratique'))).filter(x=>x.creneaux.id!=me&&(!x.creneaux.categorie||x.creneaux.categorie==r.categorie));
+ const deja=dp.map(x=>`${nomSt(x.stagiaire_id)} est déjà placé en test pratique ${r.famille} ${r.categorie} le ${frc(x.creneaux.jour)}`);
+ let cf=conflits(r,sel,me,jourAll);
+ const bc=r.est_test?cf.filter(x=>/^(Formateur|Stagiaire)/.test(x)):[];cf=cf.filter(x=>!bc.includes(x));      // test : formateur ou stagiaire déjà pris = refus
+ const dur=[...deja,testeurOk(r),...bloquantsCat(r,sel),dureeMax(r,rows),conflitCat(r,me,jourAll),conflitExcl(r,me,jourAll),plafondJour(r,sel,me,jourAll,rows),...bc].filter(Boolean);
+ if(dur.length){alert('ENREGISTREMENT REFUSÉ :\n- '+dur.join('\n- '));return false}
+ const lm=verifLim(r,sel,me,jourAll,rows);
+ if(lm.b.length){alert('ENREGISTREMENT REFUSÉ (limite en mode Blocage) :\n- '+lm.b.join('\n- '));return false}
+ const tous=[...new Set([...cf,...lm.a])];
+ return !tous.length||confirm('CONFLITS / LIMITES :\n- '+tous.join('\n- ')+'\n\nEnregistrer quand même ?')}
+
+// ---- Tri des stagiaires : début (lundi→vendredi), puis fin croissante (sans fin = après), puis catégories de la famille.
+// À début et fin égaux : une seule catégorie d'abord (ordre de la famille), puis les stagiaires à plusieurs catégories (catégorie principale d'abord).
+const catIdx=(f,c)=>{const i=D.cat.filter(k=>k.famille==f).findIndex(k=>k.nom==c);return i<0?998:i};
+function cmpSt(a,b){const ia=(a.categories||[]).map(c=>catIdx(a.famille,c)).sort((x,y)=>x-y),ib=(b.categories||[]).map(c=>catIdx(b.famille,c)).sort((x,y)=>x-y);
+ for(const[x,y]of[[a.date_debut||'9999-12-31',b.date_debut||'9999-12-31'],[a.date_fin||'9999-12-31',b.date_fin||'9999-12-31'],[+(ia.length>1),+(ib.length>1)]]){if(x<y)return-1;if(x>y)return 1}
+ for(let i=0;i<Math.max(ia.length,ib.length);i++){const x=ia[i]??998,y=ib[i]??998;if(x!=y)return x-y}
+ return(a.nom+' '+a.prenom).localeCompare(b.nom+' '+b.prenom,'fr')}
+const semSt=f=>{const lun=S.lundi,ven=add(lun,4);return D.st.filter(s=>s.famille==f&&(!s.date_debut||(s.date_debut<=ven&&(!s.date_fin||s.date_fin>=lun)))).sort(cmpSt)};
+const SJ=()=>[0,1,2,3,4].map(i=>add(S.lundi,i));
+
+// ---- Statut « à planifier » (semaine affichée) : un candidat en test n'est complet que s'il a une théorie ET une pratique planifiées ----
+const inCr=(c,id)=>c.creneau_stagiaires.some(x=>x.stagiaire_id==id);
+function catsSansPratique(s){if(s.theorie_seule)return [];const cs=(s.categories||[]).length?s.categories:[''];
+ return cs.filter(k=>!D.cr.some(c=>estPr(c)&&inCr(c,s.id)&&(!c.categorie||c.categorie==k)))}
+function manqueTest(s){const th=D.cr.some(c=>estTh(c)&&inCr(c,s.id)),m=catsSansPratique(s),pr=m.length?'pratique'+(m[0]?' '+m.join(', '):''):'';
+ return th&&!pr?'':[!th?'théorie':'',pr].filter(Boolean).join(' + ')+' à planifier'}
+const sansCat=s=>!s.theorie_seule&&catsFam(s.famille).length>0&&!(s.categories||[]).length;
+function sansCatCard(){const l=D.st.filter(sansCat);return l.length?`<div class="card trou"><b>⚠ ${l.length} candidat(s) sans catégorie</b> (impossible de les placer en test) :<br>${l.map(s=>`${esc(s.prenom)} ${esc(s.nom)} (${s.famille}) <button class="sec" onclick="S.page='stagiaires';S.fam='${s.famille}';render();editSt('${s.id}')">✎ Renseigner</button>`).join('<br>')}</div>`:''}
+function aPlanifier(s,jr){if(sansCat(s))return '⚠ CATÉGORIE MANQUANTE';const j=jr.filter(d=>dEnPlace(s,d));if(!j.length)return '';
+ const p=[],fj=j.filter(d=>dayType(s,d)!='Test'&&!D.cr.some(c=>c.jour==d&&c.est_formation&&inCr(c,s.id)));     // chaque journée de formation doit avoir son créneau
+ if(fj.length)p.push('formation '+fj.map(d=>JN[jr.indexOf(d)]).join(', '));
+ if(j.some(d=>dayType(s,d)!='Formation')){const m=manqueTest(s).replace(' à planifier','');if(m)p.push(m)}
+ return p.length?p.join(' + ')+' à planifier':''}
+
+// ---- Formateurs ----
+function pForm(){$('pg').innerHTML=`<div class="card" data-fold="pf:formateurs"><h2>Formateurs</h2>${D.f.map(f=>`<div><b>${f.nom}</b> ${depasse(f.id)?'<span class="warn">🔴 limite dépassée cette semaine</span>':''} <label class="k"><input type="checkbox" ${f.actif?'checked':''} onchange="upd('formateurs','${f.id}',{actif:this.checked})"> accès actif</label> <label class="k">🔑 code perso <input value="${esc(f.code_perso||'')}" maxlength="4" inputmode="numeric" placeholder="4 chiffres" style="width:6em" onchange="setPin('${f.id}',this.value)"></label>
+ <button class="sec" onclick="renom('formateurs','${f.id}')">✎</button><button class="del" onclick="sup('formateurs','${f.id}')">✕</button>
+ <details ${S.hd==f.id?'open':''} style="margin:4px 0 10px"><summary>Habilitations testeur : <b>${habTxt(f.id)}</b></summary>${FAM.map(fa=>{const cs=catsFam(fa).map(c=>c.nom);return `<div><b>${fa}</b> `+(cs.length?cs:['']).map(k=>`<label class="k"><input type="checkbox" ${(D.hab||[]).some(h=>h.formateur_id==f.id&&h.famille==fa&&h.categorie==k)?'checked':''} onchange="togHab('${f.id}','${fa}','${k}',this.checked)"> ${k||'unique'}</label>`).join('')+`</div>`}).join('')}</details></div>`).join('')}<button onclick="ajout('formateurs')">+ Formateur</button><p class="leg">Un test ne peut être attribué qu'à un testeur habilité pour la famille et la catégorie (blocage à l'enregistrement). Pour un nouveau testeur : l'ajouter ici, puis cocher ses habilitations.</p></div>`+dispoJour()+msgCard();msgNote()}
+// ---- Disponibilités réelles des formateurs, jour par jour (consultation) : plages libres 8h–12h / 13h–17h hors créneaux et formations diverses, UT restantes ----
+const jSem=d=>new Date(d+'T12:00:00').getDay();
+function djGo(n){let d=S.dj||S.lundi;do{d=add(d,n)}while(jSem(d)==0||jSem(d)==6);djSet(d)}
+function djSet(d){if(!d)return;if(jSem(d)==0)d=add(d,1);if(jSem(d)==6)d=add(d,2);S.dj=d;if(d<S.lundi||d>add(S.lundi,4)){S.lundi=lundiDe(d);charger()}else render()}
+function dispoJour(){if(!S.dj||S.dj<S.lundi||S.dj>add(S.lundi,4)){const t=iso(new Date());S.dj=t>=S.lundi&&t<=add(S.lundi,4)?t:S.lundi}
+ const j=S.dj,L=D.lim,rows=D.f.filter(f=>f.actif!==false).map(f=>{const r=libres(f.id,j,null),g=charge(f.id,j,D.cr),rp=Math.max(0,+L.max_pratique-g.pra),rt=Math.max(0,+L.max_total-g.tot);
+  return `<tr><td><b>${esc(f.nom)}</b></td><td>${r.lib.length?r.lib.map(x=>`<span style="border:1px solid #555;border-radius:6px;padding:1px 6px;white-space:nowrap;display:inline-block;margin:1px">${hhmm(x[0])}–${hhmm(x[1])}</span>`).join(' '):'<b>⛔ Complet</b>'}</td><td>pratique : reste ${fmt(rp)} UT<br>total : reste ${fmt(rt)} UT</td></tr>`}).join('');
+ return `<div class="card"><h2>📅 Disponibilités des formateurs</h2><div class="nav"><button class="sec" onclick="djGo(-1)">◀ Jour précédent</button><b>${['Dimanche','Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi'][jSem(j)]} ${j.split('-').reverse().join('/')}</b><button class="sec" onclick="djGo(1)">Jour suivant ▶</button><input type="date" value="${j}" onchange="djSet(this.value)"></div>
+ <table><tr><th>Formateur</th><th>Libre</th><th>UT restantes</th></tr>${rows||'<tr><td colspan="3"><i>Aucun formateur</i></td></tr>'}</table><p class="leg">Plages libres entre 8h–12h et 13h–17h, en retirant ses créneaux et ses formations diverses (plages de 15 min minimum). Consultation seulement.</p></div>`}
+// ---- Messages privés aux formateurs : lus uniquement avec le code personnel à 4 chiffres, puis « J'ai lu » les fait disparaître ----
+function setPin(id,v){v=v.trim();if(v&&!/^\d{4}$/.test(v)){alert('Le code personnel doit comporter exactement 4 chiffres (ou rester vide).');return charger()}upd('formateurs',id,{code_perso:v||null})}
+function msgCard(){const fs=D.f.filter(f=>f.actif!==false);
+ return `<div class="card"><h2>✉ Envoyer un message à un formateur</h2><label>Formateur <select id="mf" onchange="S.mf=this.value;msgNote()"><option value="">— choisir —</option>${opt(fs,'id',x=>x.nom,S.mf||'')}</select></label>
+ <textarea id="mt" rows="4" style="width:100%;box-sizing:border-box" maxlength="1000" placeholder="Votre message…" oninput="S.mt=this.value">${esc(S.mt||'')}</textarea>
+ <p id="mn" class="leg"></p><button onclick="msgSend()">✉ Envoyer</button>
+ <p class="leg">Le formateur voit « ✉ Un message vous attend » sur sa page. Il lit le message avec son code personnel à 4 chiffres, puis le message disparaît quand il appuie sur « J'ai lu ». Les autres formateurs ne voient rien.</p></div>`}
+function msgNote(){const f=D.f.find(x=>x.id==S.mf),e=$('mn');if(e)e.innerHTML=f&&!f.code_perso?'⛔ <b>'+esc(f.nom)+' n\'a pas encore de code personnel</b> : saisissez-le dans sa fiche (🔑 code perso) pour qu\'il puisse lire ses messages.':''}
+async function msgSend(){const id=$('mf').value,t=($('mt').value||'').trim();if(!id)return alert('Choisissez un formateur.');if(!t)return alert('Écrivez un message.');
+ const f=D.f.find(x=>x.id==id);if(!f.code_perso&&!confirm(f.nom+' n\'a pas de code personnel : il ne pourra pas lire ce message tant que vous ne lui en aurez pas défini un.\nEnvoyer quand même ?'))return;
+ await ok(sb.from('messages_formateur').insert({formateur_id:id,texte:t}));S.mt='';alert('Message envoyé à '+f.nom+'.');render()}
+const habTxt=fid=>{const l=FAM.map(fa=>{const h=(D.hab||[]).filter(x=>x.formateur_id==fid&&x.famille==fa).map(x=>x.categorie);const n=catsFam(fa).length;return h.length?fa+(n&&h.length<n?' ('+h.join(', ')+')':''):''}).filter(Boolean);return l.length?l.join(' · '):'aucune (non testeur)'};
+async function togHab(fid,fa,k,v){S.hd=fid;await ok(v?sb.from('habilitations').upsert({formateur_id:fid,famille:fa,categorie:k}):sb.from('habilitations').delete().eq('formateur_id',fid).eq('famille',fa).eq('categorie',k));charger()}
+
+// ---- Paramètres : accès, salles, catégories ----
+function pParams(){$('pg').innerHTML=`<div class="card"><h2>Accès</h2><label class="k"><input type="checkbox" ${D.p.planning_ouvert?'':'checked'} onchange="majP({planning_ouvert:!this.checked})"> Planning fermé (tous les formateurs)</label><label class="k"><input type="checkbox" ${D.p.stagiaires_ouvert===false?'checked':''} onchange="majP({stagiaires_ouvert:!this.checked})"> Rubrique « Stagiaires de la semaine » fermée aux formateurs</label><label class="k"><input type="checkbox" ${D.p.charge_ouvert===false?'checked':''} onchange="majP({charge_ouvert:!this.checked})"> Rubrique « Charge testeurs » fermée aux formateurs</label><label class="k"><input type="checkbox" ${D.p.semaines_futures_ouvert===true?'checked':''} onchange="majP({semaines_futures_ouvert:this.checked})"> Semaines à venir <b>visibles</b> par les formateurs (planning, stagiaires, charge testeurs) — décoché : seule la semaine en cours est visible</label><button class="sec" onclick="code()">Changer le code d'accès</button></div>
+ <div class="card"><h2>Salles</h2>${D.sa.map(x=>`<div>${x.nom} <button class="sec" onclick="renom('salles','${x.id}')">✎</button><button class="del" onclick="sup('salles','${x.id}')">✕</button></div>`).join('')}<button onclick="ajout('salles')">+ Salle</button></div>
+ <div class="card"><h2>Paramètres des catégories</h2>${FAM.map(f=>`<h4>${f}</h4>${D.cat.filter(c=>c.famille==f).map(c=>`<span class="tag">${c.nom} <a href="#" onclick="renCat('${c.id}');return false">✎</a> <a href="#" onclick="supCat('${c.id}');return false">✕</a> <label class="k"><input type="checkbox" ${c.multi_testeurs?'checked':''} onchange="majCat('${c.id}',this.checked)"> 2 testeurs</label></span>`).join('')||'<small>Catégorie unique</small> '}<button class="sec" onclick="addCat('${f}')">+ Catégorie</button>`).join('')}<p class="leg">« 2 testeurs » : autorise deux testeurs différents en même temps sur cette catégorie (par défaut seulement R489 cat. 3). Sinon un seul testeur à la fois par catégorie.</p></div>`+entCard()+parUT();reduc()}
+// Paramètres : chaque fenêtre (carte) se réduit / se déploie en touchant son titre ; l'état est mémorisé sur cet appareil
+const FOLD=()=>{try{return JSON.parse(localStorage.pcol||'{}')}catch(e){return{}}};
+function fold(c,k){const h=c.querySelector(':scope>h2,:scope>h3');if(!h)return;const app=v=>{[...c.children].forEach(x=>{if(x!==h)x.style.display=v?'none':''});h.firstChild.textContent=v?'▸ ':'▾ '};
+ h.dataset.k=k;h.style.cursor='pointer';h.style.userSelect='none';h.insertBefore(document.createTextNode('▾ '),h.firstChild);
+ let v=FOLD()[k]!==false;app(v);h.onclick=()=>{v=!v;app(v);const st=FOLD();st[k]=v;try{localStorage.pcol=JSON.stringify(st)}catch(e){}}}
+function foldAll(){[...document.querySelectorAll('#pg>.card')].forEach(c=>{const h=c.querySelector(':scope>h2,:scope>h3');if(h)fold(c,c.dataset.fold||h.textContent.trim())})}
+// Menus déroulants : TOUS repliés par défaut ; l'état choisi est mémorisé sur cet appareil
+function reduc(){const cs=[...document.querySelectorAll('#pg>.card')].filter(c=>c.querySelector(':scope>h2'));
+ const b=document.createElement('p');b.innerHTML='<button class="sec" id="rdt">▸ Tout réduire</button><button class="sec" id="rdd">▾ Tout développer</button>';$('pg').prepend(b);
+ const tous=v=>{const st=FOLD();cs.forEach(c=>{st[c.querySelector(':scope>h2').textContent.trim().replace(/^[▸▾]\s*/,'')]=v});try{localStorage.pcol=JSON.stringify(st)}catch(e){}render()};$('rdt').onclick=()=>tous(true);$('rdd').onclick=()=>tous(false)}
+function parUT(){const L=D.lim,sel=k=>`<select onchange="majL({mode_${k}:this.value})"><option value="alerte" ${L['mode_'+k]=='alerte'?'selected':''}>Alerte</option><option value="blocage" ${L['mode_'+k]=='blocage'?'selected':''}>Blocage</option></select>`,
+ num=k=>`<input type="number" step="0.25" value="${L[k]}" style="width:90px" onchange="majL({${k}:+this.value})">`;
+ return `<div class="card"><h2>Barème UT (1 UT ≈ 1 h)</h2><p class="leg">Théorie : chaque session (un créneau de théorie d'une recommandation) compte ${num('ut_theorie')} UT pour le testeur, quel que soit le nombre de candidats. Un changement de barème ne modifie pas les plannings déjà enregistrés. Pour ajouter ou retirer une catégorie : « Paramètres des catégories » ci-dessus.</p>
+ ${FAM.map(f=>{const cs=D.cat.filter(c=>c.famille==f).map(c=>c.nom);return `<h4>${f}</h4>`+(cs.length?cs:['']).map(c=>{const b=D.bar.find(x=>x.famille==f&&x.categorie==c);return `<label class="k">${c||'Catégorie unique'} <input type="number" step="0.05" style="width:90px" value="${b?b.ut_pratique:''}" onchange="majBar('${f}','${c}',this.value)"></label>`}).join('')}).join('')}</div>
+ <div class="card"><h2>Options (UT en plus par option cochée)</h2>${FAM.map(f=>`<h4>${f}</h4>`+D.opt.filter(o=>o.famille==f).map(o=>`<span class="tag">${o.nom} +<input type="number" step="0.25" style="width:80px" value="${o.ut}" onchange="majOpt('${o.id}',this.value)"> UT <a href="#" onclick="supOpt('${o.id}');return false">✕</a></span>`).join('')+`<button class="sec" onclick="addOpt('${f}')">+ Option</button>`).join('')}</div>
+ <div class="card"><h2>Limites d'un testeur (par jour, tests uniquement)</h2><div>Pratique : maximum ${num('max_pratique')} UT, options comprises <b>⛔ Blocage</b> (fixe : le dépassement est toujours refusé)</div><div>Total (pratique + théorie) : maximum ${num('max_total')} UT ${sel('total')}</div><div>Candidats : maximum ${num('max_candidats')} par session de théorie <b>⛔ Blocage</b> (fixe)</div>
+ <p class="leg">Alerte = avertissement (on peut confirmer) ; Blocage = enregistrement refusé.</p></div>`}
+// ---- Gérer les entreprises : liste construite à partir des stagiaires ; renommer / fusionner ; supprimer = vider l'entreprise des stagiaires concernés ----
+function entListe(){const m={};(D.st||[]).forEach(x=>{const e=(x.entreprise||'').trim();if(!e)return;const k=nz(e);(m[k]=m[k]||{k,n:0,t:{}}).n++;m[k].t[e]=(m[k].t[e]||0)+1});
+ return Object.values(m).map(v=>({k:v.k,n:v.n,nom:Object.entries(v.t).sort((a,b)=>b[1]-a[1])[0][0]})).sort((a,b)=>a.nom.localeCompare(b.nom,'fr',{sensitivity:'base'}))}
+function entCard(){const l=entListe();
+ return `<div class="card"><h2>🏢 Entreprises</h2><p class="leg">Liste construite à partir des stagiaires. ✎ Renommer : corrige une faute, ou fusionne avec une autre entreprise en saisissant son nom. ✕ Supprimer : retire cette entreprise des stagiaires concernés (les stagiaires restent).</p>
+ ${l.length?l.map(e=>`<div style="display:flex;align-items:center;gap:8px;padding:3px 0;border-bottom:1px solid #ddd"><b style="flex:1">${esc(e.nom)}</b><small>${e.n} stagiaire${e.n>1?'s':''}</small><button class="sec" onclick="entRen('${esc(e.k).replace(/'/g,"\\'")}')">✎</button><button class="del" onclick="entSup('${esc(e.k).replace(/'/g,"\\'")}')">✕</button></div>`).join(''):'<i>Aucune entreprise saisie.</i>'}</div>`}
+async function entMaj(k,val){const ids=D.st.filter(x=>nz(x.entreprise)==k).map(x=>x.id),idp=[].concat(...(D.sd||[]).map(d=>d.sessions_div_stagiaires||[])).filter(x=>nz(x.entreprise)==k).map(x=>x.id);
+ if(ids.length)await ok(sb.from('stagiaires').update({entreprise:val}).in('id',ids));if(idp.length)await ok(sb.from('sessions_div_stagiaires').update({entreprise:val}).in('id',idp));charger()}
+function entRen(k){const e=entListe().find(x=>x.k==k);if(!e)return;const n=prompt('Nouveau nom pour « '+e.nom+' » ('+e.n+' stagiaire'+(e.n>1?'s':'')+').\nPour fusionner avec une autre entreprise, saisissez son nom exact :',e.nom);if(n===null)return;const v=n.trim();if(!v)return alert('Le nom ne peut pas être vide. Utilisez ✕ pour retirer l\'entreprise.');if(v==e.nom)return;entMaj(k,v)}
+function entSup(k){const e=entListe().find(x=>x.k==k);if(!e)return;if(confirm('Supprimer l\'entreprise « '+e.nom+' » ?\n\n'+e.n+' stagiaire'+(e.n>1?'s':'')+' perdr'+(e.n>1?'ont':'a')+' cette entreprise (ils ne sont pas supprimés).'))entMaj(k,'')}
+// ---- Alerte de doublon à la création : même personne (nom/prénom identiques ou presque), même entreprise, même famille, dates qui se chevauchent
+function doublonsSt(r,excl){const d=(x,y)=>lev(nz(x.nom)+' '+nz(x.prenom),nz(y.nom)+' '+nz(y.prenom));
+ return (D.st||[]).filter(x=>x.id!=excl&&x.famille==r.famille&&nz(x.entreprise)==nz(r.entreprise)&&Math.min(d(x,r),lev(nz(x.nom)+' '+nz(x.prenom),nz(r.prenom)+' '+nz(r.nom)))<=2
+  &&(x.date_debut||'0000-00-00')<=(r.date_fin||'9999-99-99')&&(r.date_debut||'0000-00-00')<=(x.date_fin||'9999-99-99'))}
+const dblTxt=(x)=>x.prenom+' '+x.nom+(x.entreprise?' ('+x.entreprise+')':'')+' — '+x.famille+(x.date_debut?' du '+frc(x.date_debut)+(x.date_fin&&x.date_fin!=x.date_debut?' au '+frc(x.date_fin):''):'');
+const majL=async v=>{await ok(sb.from('limites_ut').update(v).eq('id',1));charger()};
+const majBar=async(f,c,v)=>{await ok(sb.from('bareme_ut').upsert({famille:f,categorie:c,ut_pratique:+v},{onConflict:'famille,categorie'}));charger()};
+const majOpt=async(id,v)=>{await ok(sb.from('options_famille').update({ut:+v}).eq('id',id));charger()};
+const supOpt=async id=>{if(confirm('Retirer cette option ?')){await ok(sb.from('options_famille').delete().eq('id',id));charger()}};
+const addOpt=async f=>{const n=prompt('Nom de l\'option');if(n){await ok(sb.from('options_famille').insert({famille:f,nom:n,ut:0.5}));charger()}};
+async function majP(v){await ok(sb.from('parametres').update(v).eq('id',1));charger()}
+async function code(){const c=prompt('Nouveau code d\'accès des formateurs');if(c){await ok(sb.rpc('definir_code',{p_code:c}));alert('Code modifié.')}}
+const majCat=async(id,v)=>{await ok(sb.from('categories').update({multi_testeurs:v}).eq('id',id));charger()};
+async function addCat(f){const n=prompt('Nouvelle catégorie '+f);if(n){await ok(sb.from('categories').insert({famille:f,nom:n,ordre:D.cat.filter(c=>c.famille==f).length}));charger()}}
+async function renCat(id){const c=D.cat.find(x=>x.id==id),n=prompt('Renommer',c.nom);if(!n||n==c.nom)return;
+ await ok(sb.from('categories').update({nom:n}).eq('id',id));   // on répercute le nouveau nom sur stagiaires et créneaux
+ for(const s of D.st.filter(s=>s.famille==c.famille&&(s.categories||[]).includes(c.nom)))await ok(sb.from('stagiaires').update({categories:s.categories.map(x=>x==c.nom?n:x)}).eq('id',s.id));
+ await ok(sb.from('creneaux').update({categorie:n}).eq('famille',c.famille).eq('categorie',c.nom));
+ await ok(sb.from('bareme_ut').update({categorie:n}).eq('famille',c.famille).eq('categorie',c.nom));
+ await ok(sb.from('stagiaire_options').update({categorie:n}).eq('categorie',c.nom).in('stagiaire_id',D.st.filter(s=>s.famille==c.famille).map(s=>s.id)));charger()}
+async function supCat(id){const c=D.cat.find(x=>x.id==id),n=D.st.filter(s=>s.famille==c.famille&&(s.categories||[]).includes(c.nom)).length;
+ if(confirm(n?`${n} stagiaire(s) utilisent « ${c.nom} ». Supprimer quand même ? L'historique est conservé.`:'Supprimer ?')){await ok(sb.from('categories').delete().eq('id',id));charger()}}
+
+// ---- Stagiaires : onglets par famille + vue globale ----
+const repStag=f=>{const n=f=='Globale'?FAM.reduce((a,x)=>a+semSt(x).length,0):semSt(f).length;return n?` <span class="rep">👥 ${n}</span>`:''};
+function pStag(){const gl=S.fam=='Globale';$('pg').innerHTML=`<div class="nav">${[...FAM,'Globale'].map(t=>`<button ${fcs(t)} class="${S.fam==t?'':'sec'}" onclick="S.fam='${t}';render()">${t=='Globale'?'Vue globale':t}${repStag(t)}</button>`).join('')}</div>${wk()}${presLine()}<button class="sec" onclick="apercuStag()">🔍 Aperçu avant impression</button><button class="sec" onclick="apFn=contenuStag;imprimerStag()">Imprimer cet aperçu</button><button onclick="editSt(null,'${gl?'R482':S.fam}')">+ Nouveau stagiaire</button><button onclick="lotSt('${gl?'R482':S.fam}')">⚡ Saisie rapide (plusieurs)</button><div class="card" id="sf" hidden></div>${sansCatCard()}
+ <p class="leg">${gl?'UT = pratique + 0,5 par option cochée, hors théories (« - » = formation seule). Tri : date de début, puis de fin, puis catégories. Touchez une date pour modifier le stagiaire.':'▶ début · ■ fin · Form. / Test / F+T = activité du jour · abs. = absent · touchez un jour pour le définir. Les horaires se gèrent dans Planning.'}</p>
+ ${gl?tabGlobale():`${tabFam(S.fam)}
+ <button class="sec" onclick="$('csv').click()">Import CSV</button><input id="csv" type="file" accept=".csv" hidden onchange="importCsv(this.files[0])"><small> nom;prénom;entreprise;famille;catégories (A|B);type;début;fin</small>`}`}
+// Vue globale : tableaux compacts par famille (colonnes de largeurs fixes, donc alignées d'une famille à l'autre)
+// UT (pratique + options, hors théories) : total par famille, total par JOUR DE FIN, total général
+const CG2='<colgroup><col style="width:27%"><col style="width:21%"><col style="width:5.5%"><col style="width:20%"><col style="width:6.5%"><col style="width:6.5%"><col style="width:5.5%"><col class="np" style="width:8%"></colgroup>';   // vue globale : colonnes ajustées au contenu
+const CG='<colgroup><col style="width:25%"><col style="width:21%"><col style="width:7%"><col style="width:17%"><col style="width:8%"><col style="width:8%"><col style="width:7%"><col class="np" style="width:7%"></colgroup>';
+function finBuckets(l){const jr=SJ(),b=[0,0,0,0,0,0];l.forEach(s=>{if(!isTest(s))return;const i=jr.indexOf(s.date_fin);b[i<0?5:i]+=utPrat(s)});return b}
+// Présence du jour (confirmée par un formateur ou à la main) : discret, jamais imprimé
+const aujd=()=>iso(new Date());
+function presBadge(s){const t=aujd();if(!SJ().includes(t)||!dEnPlace(s,t))return '';const p=(D.pres||[]).find(x=>x.stagiaire_id==s.id&&x.jour==t);
+ if(!p)return ` <span class="pr np" title="Touchez pour confirmer à la main" onclick="togPres('${s.id}',true)">◌ à confirmer</span>`;
+ const f=(D.f.find(x=>x.id==p.formateur_id)||{}).nom;return ` <span class="pr ok np" title="${f?'Confirmé par '+f:'Confirmé par l\'admin'} — touchez pour annuler" onclick="togPres('${s.id}',false)">✓ présent ${new Date(p.confirme_le).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}</span>`}
+function presLine(){const t=aujd();if(!SJ().includes(t))return '';const a=D.st.filter(s=>dEnPlace(s,t));if(!a.length)return '';
+ const n=a.filter(s=>(D.pres||[]).some(p=>p.stagiaire_id==s.id&&p.jour==t)).length;return `<p class="np"><b>Présents aujourd'hui : ${n} / ${a.length}</b> <small>(confirmés par les formateurs)</small></p>`}
+async function togPres(id,v){const t=aujd();await ok(v?sb.from('presences').upsert({stagiaire_id:id,jour:t,formateur_id:null,confirme_le:new Date().toISOString()}):sb.from('presences').delete().eq('stagiaire_id',id).eq('jour',t));charger()}
+const finTxt=b=>b.map((u,i)=>u?`${i<5?JN[i]+' '+frc(SJ()[i]):'Après ven. / sans fin'} : <b>${fmt(u)}</b>`:'').filter(Boolean).join(' · ')||'—';
+function tabGlobale(){let tot=0,all=[0,0,0,0,0,0];const vus={},JNm=['Dimanche','Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi'],
+  dates=[...new Set(FAM.flatMap(f=>semSt(f).map(s=>s.date_debut||'')))].sort((a,b)=>a===''?1:b===''?-1:a<b?-1:a>b?1:0);
+ // d'abord les candidats qui démarrent le premier jour, puis le suivant… ; dans chaque jour de démarrage, un bloc par famille
+ const h=dates.map(d=>{const bl=FAM.map(f=>{const l=semSt(f).filter(s=>(s.date_debut||'')===d);if(!l.length)return '';const ut=l.reduce((a,s)=>a+(isTest(s)?utPrat(s):0),0),b=finBuckets(l);tot+=ut;b.forEach((u,i)=>all[i]+=u);
+   const btn=vus[f]?'':` <button class="del np" onclick="viderFam('${f}')">Vider ${f} (${semSt(f).length})</button>`;vus[f]=1;
+   return `<h3 class="gh">${f}${btn}</h3>`+tabCompact(f,l,ut,b,true)}).join('');
+  return bl?`<h2 class="gd">${d?'Démarrent le '+JNm[new Date(d+'T12:00:00').getDay()].toLowerCase()+' '+frc(d):'Sans date de démarrage'}</h2>`+bl:''}).join('');
+ return (h||'<small>Aucun stagiaire cette semaine.</small>')+`<div class="card"><b>Total général de la semaine : ${fmt(tot)} UT</b> (pratique et options, hors théories)<br><small>UT par jour de fin : </small>${finTxt(all)}</div>`}
+function tabCompact(f,l,ut,b,blocs){const jr=SJ();
+ // Sous-total par date de fin : une ligne fine entre les groupes (à la place de l'espace vide), seulement s'il y a plusieurs dates de fin
+ const K=s=>(s.date_debut||'')+'|'+(s.date_fin||''),grp=new Set(l.map(K)).size>1,ftot=k=>fmt(l.filter(s=>K(s)==k).reduce((a,s)=>a+(isTest(s)?utPrat(s):0),0)),
+  fl=k=>{const[d,f]=k.split('|');return (d?'Début '+frc(d):'Sans date de début')+' · '+(f?'fin '+frc(f):'sans date de fin')},
+  sf=(s,last)=>blocs?(last?'':'<tr class="sp"><td colspan="8"></td></tr>'):grp?`<tr class="sf"><td colspan="6">${fl(K(s))} :</td><td>${ftot(K(s))}</td><td class="np"></td></tr>`:'';
+ return `<div class="tw"><table class="fam cp gl" style="--fc:${FC[f]}">${CG2}<tr><th>Stagiaire</th><th>Entreprise</th><th>Fam.</th><th>Catégories</th><th>Début</th><th>Fin</th><th>UT</th><th class="np"></th></tr>`+l.map((s,ix)=>{const ap=aPlanifier(s,jr),sp=(ix&&K(l[ix-1])!==K(s))?sf(l[ix-1],0):'';
+  return sp+`<tr><td><b>${esc(s.prenom)} ${esc(s.nom)}</b>${s.theorie_seule?' <span class="th1">📖 théorie seule</span>':''}${presBadge(s)}${ap?` <span class="warn">${ap}</span>`:''}</td><td>${esc(s.entreprise||'—')}</td><td>${f}</td><td>${(s.categories||[]).join(', ')||'—'}</td><td onclick="editSt('${s.id}')" style="cursor:pointer">${frc(s.date_debut)}</td><td onclick="editSt('${s.id}')" style="cursor:pointer">${frc(s.date_fin)}</td><td><b>${utTxt(s)}</b></td><td class="np"><button class="sec" onclick="editSt('${s.id}')">✎</button><button class="del" onclick="supSt('${s.id}')">✕</button></td></tr>`}).join('')+sf(l[l.length-1],1)+`<tr class="tot"><td colspan="6">Total ${f} (pratique)</td><td>${fmt(ut)}</td><td class="np"></td></tr><tr class="tot2"><td colspan="7">UT par jour de fin : ${finTxt(b)}</td><td class="np"></td></tr></table></div>`}
+// ---- Formations diverses (habilitation électrique, AIPR, travaux en hauteur…) : menu discret, replié par défaut, sous la liste des stagiaires ----
+const fdNom=id=>((D.fd||[]).find(x=>x.id==id)||{}).nom||'?',hh5=t=>String(t||'').slice(0,5);
+// Premier / dernier jour d'une session de plusieurs jours : journée complète, matin seul ou après-midi seul
+const sdMA=(x,d)=>{let m=true,a=true;if(d&&x.jour_debut!=x.jour_fin){const f=md=>{if(md=='matin')a=false;else if(md=='aprem')m=false};if(d==x.jour_debut)f(x.mode_premier);if(d==x.jour_fin)f(x.mode_dernier)}return{m,a}},
+ sdP=(x,d)=>{const q=sdMA(x,d);return [q.m&&[x.debut,x.fin],q.a&&[x.debut2,x.fin2]].filter(p=>p&&p[0]&&p[1])},
+ sdSlots=(x,d)=>sdP(x,d).map(p=>[mins(p[0]),mins(p[1])]),
+ sdDemi=x=>x.jour_debut!=x.jour_fin&&((x.mode_premier||'complet')!='complet'||(x.mode_dernier||'complet')!='complet')?' <small>('+[x.mode_premier=='matin'?'1er jour : matin seulement':x.mode_premier=='aprem'?'1er jour : après-midi seulement':'',x.mode_dernier=='matin'?'dernier jour : matin seulement':x.mode_dernier=='aprem'?'dernier jour : après-midi seulement':''].filter(Boolean).join(' · ')+')</small>':'',
+ sdHor=(x,d)=>sdP(x,d).map(p=>hh5(p[0])+'–'+hh5(p[1])).join(' + ')+(d?'':sdDemi(x)),sdLieu=x=>x.chez_client?'🏢 chez '+(x.lieu?esc(x.lieu):'le client'):'🏫 Centre de formation Wantz'+(x.salle_id?' — '+esc((D.sa.find(a=>a.id==x.salle_id)||{}).nom||''):'');
+function divOcc(fid,jour){return fid?(D.sd||[]).filter(x=>x.formateur_id==fid&&jour>=x.jour_debut&&jour<=x.jour_fin).flatMap(x=>sdSlots(x,jour)):[]}
+function divJour(d){return (D.sd||[]).filter(x=>d>=x.jour_debut&&d<=x.jour_fin).map(x=>`<div class="sdv">🎓 <b>${esc(fdNom(x.formation_id))}</b> ${sdHor(x,d)} · ${esc((D.f.find(f=>f.id==x.formateur_id)||{nom:'formateur à affecter'}).nom)}${sdLieu(x)?' · '+sdLieu(x):''} · ${(x.sessions_div_stagiaires||[]).length} inscrit(s)</div>`).join('')}
+function pDivCard(){const L=D.sd||[],ed=S.sd,s0=ed&&ed!='new'?L.find(x=>x.id==ed):null,v=s0||{formation_id:'',jour_debut:S.lundi,jour_fin:S.lundi,debut:'08:00',fin:'11:30',debut2:'13:00',fin2:'16:30',chez_client:false,lieu:'',formateur_id:'',salle_id:'',consigne:'',mode_premier:'complet',mode_dernier:'complet'};
+ const md=(id,cur)=>`<select id="${id}"><option value="complet" ${cur!='matin'&&cur!='aprem'?'selected':''}>Journée complète</option><option value="matin" ${cur=='matin'?'selected':''}>Matin seulement</option><option value="aprem" ${cur=='aprem'?'selected':''}>Après-midi seulement</option></select>`;
+ const sel=(id,l,cur,vide)=>`<select id="${id}">${vide?`<option value="">${vide}</option>`:''}${l.map(x=>`<option value="${x.id}" ${x.id==cur?'selected':''}>${esc(x.nom)}</option>`).join('')}</select>`;
+ const form=ed?`<div class="sdv"><b>${s0?'Modifier la session':'Nouvelle session'}</b><br>${sel('sdt',D.fd||[],v.formation_id,'— formation —')} du <input type="date" id="sdj1" value="${v.jour_debut}"> au <input type="date" id="sdj2" value="${v.jour_fin}"> <br>Premier jour : ${md('sdm1',v.mode_premier)} · Dernier jour : ${md('sdm2',v.mode_dernier)} <small>(si la session dure plusieurs jours ; les jours du milieu sont complets)</small><br>Matin de <input type="time" id="sdh1" value="${hh5(v.debut)}"> à <input type="time" id="sdh2" value="${hh5(v.fin)}"> · Après-midi de <input type="time" id="sdh3" value="${hh5(v.debut2)}"> à <input type="time" id="sdh4" value="${hh5(v.fin2)}"> <small>(videz les deux champs d'une demi-journée pour ne pas la compter)</small><br>${sel('sdf',D.f.filter(f=>f.actif||f.id==v.formateur_id),v.formateur_id,'— formateur (à affecter) —')} ${sel('sds',D.sa,v.salle_id,'— salle —')} <label class="k"><input type="checkbox" id="sdcc" ${v.chez_client?'checked':''}> 🏢 Chez le client</label> <small>(sinon : Centre de formation Wantz)</small> <input id="sdl" placeholder="Client / adresse" value="${esc(v.lieu||'')}" style="width:30%"><br><input id="sdc" placeholder="Consigne pour le formateur (facultatif)" value="${esc(v.consigne||'')}" style="width:100%;box-sizing:border-box"><br><button onclick="sdSave()">Enregistrer</button><button class="sec" onclick="S.sd=null;render()">Annuler</button></div>`:'';
+ const sess=L.map(x=>`<div class="sdv"><b>${esc(fdNom(x.formation_id))}</b> · ${frc(x.jour_debut)}${x.jour_fin!=x.jour_debut?' → '+frc(x.jour_fin):''} · ${sdHor(x)} · ${esc((D.f.find(f=>f.id==x.formateur_id)||{nom:'formateur à affecter'}).nom)}${sdLieu(x)?' · '+sdLieu(x):''}${x.consigne?`<br><small>📌 ${esc(x.consigne)}</small>`:''} <button class="sec" onclick="S.sd='${x.id}';render()">✎</button><button class="del" onclick="sdDel('${x.id}')">✕</button><br>
+  ${(x.sessions_div_stagiaires||[]).sort((a,b)=>a.nom.localeCompare(b.nom)).map(p=>`<span class="sdp">${esc(p.prenom)} ${esc(p.nom)}${p.entreprise?' <small>('+esc(p.entreprise)+')</small>':''} <a href="#" onclick="sdDelP('${p.id}');return false">✕</a></span>`).join('')||'<small>Aucun inscrit.</small>'}<br>
+  <input list="lpre" id="pp-${x.id}" placeholder="Prénom" style="width:22%"> <input list="lnom" id="pn-${x.id}" placeholder="Nom" style="width:22%"> <input list="lent" id="pe-${x.id}" placeholder="Entreprise" style="width:28%"> <button class="sec" onclick="sdAddP('${x.id}')">+ Inscrire</button></div>`).join('');
+ const types=(D.fd||[]).map(t=>`<span class="sdp">${esc(t.nom)} <a href="#" onclick="fdRen('${t.id}');return false">✎</a> <a href="#" onclick="fdDel('${t.id}');return false">✕</a></span>`).join('');
+ $('pg').insertAdjacentHTML('beforeend',`<div class="card" data-fold="st:div"><h3>🎓 Formations diverses — semaine du ${frc(S.lundi)} : ${L.length} session(s)</h3>
+  <p><button onclick="S.sd='new';render()">+ Nouvelle session</button></p>${form}${sess||'<small>Aucune session cette semaine.</small>'}
+  <p class="leg">Formations : ${types} <button class="sec" onclick="fdAdd()">+ intitulé</button><br>Une session apparaît dans le planning du formateur affecté (sans effet sur les UT de test) ; le formateur est considéré occupé sur ses horaires.</p></div>`);
+ {const lc=$('pg').lastElementChild;if(lc)fold(lc,'st:div')}}
+const jrs=(a,b)=>{const o=[];for(let d=a;d<=b&&o.length<60;d=add(d,1))o.push(d);return o};
+async function sdSave(){const cc=$('sdcc').checked,v={formation_id:$('sdt').value,jour_debut:$('sdj1').value,jour_fin:$('sdj2').value,debut:$('sdh1').value||null,fin:$('sdh2').value||null,debut2:$('sdh3').value||null,fin2:$('sdh4').value||null,formateur_id:$('sdf').value||null,salle_id:cc?null:($('sds').value||null),chez_client:cc,lieu:cc?($('sdl').value.trim()||null):null,consigne:$('sdc').value.trim()||null};
+ if(!v.formation_id||!v.jour_debut||!v.jour_fin)return alert('Choisissez la formation et les jours.');
+ {const multi=v.jour_fin>v.jour_debut,m1=multi?$('sdm1').value:'complet',m2=multi?$('sdm2').value:'complet',s0=S.sd&&S.sd!='new'?(D.sd||[]).find(y=>y.id==S.sd):null;
+  const manque=m=>(m=='matin'&&!($('sdh1').value&&$('sdh2').value))||(m=='aprem'&&!($('sdh3').value&&$('sdh4').value));
+  if(manque(m1)||manque(m2))return alert("Le matin (ou l'après-midi) choisi pour le premier ou le dernier jour n'a pas d'horaire : renseignez ses heures de début et de fin.");
+  if(m1!='complet'||m2!='complet'||(s0&&s0.mode_premier!==undefined)){v.mode_premier=m1;v.mode_dernier=m2}}
+ if(v.jour_fin<v.jour_debut)return alert('Le dernier jour est avant le premier.');
+ if(!!v.debut!==!!v.fin||!!v.debut2!==!!v.fin2)return alert('Pour chaque demi-journée, renseignez le début ET la fin (ou videz les deux champs).');
+ if(!v.debut&&!v.debut2)return alert('Renseignez au moins une demi-journée (matin ou après-midi).');
+ if((v.debut&&v.fin<=v.debut)||(v.debut2&&v.fin2<=v.debut2))return alert("L'heure de fin doit être après l'heure de début.");
+ if(v.debut&&v.debut2&&v.debut2<v.fin)return alert("L'après-midi doit commencer après la fin du matin.");
+ const me=S.sd&&S.sd!='new'?S.sd:null,ov=(y,d)=>sdSlots(v,d).some(a=>y[0]<a[1]&&y[1]>a[0]),cf=[];
+ if(v.formateur_id){D.cr.filter(c=>c.formateur_id==v.formateur_id&&c.jour>=v.jour_debut&&c.jour<=v.jour_fin&&(c.creneau_stagiaires.length||c.previsionnel)&&ov([mins(c.debut),mins(c.fin)],c.jour)).forEach(c=>cf.push(`${frc(c.jour)} ${hh5(c.debut)}–${hh5(c.fin)} (${c.famille}${c.categorie?' '+c.categorie:''})`));
+  (D.sd||[]).filter(x=>x.id!=me&&x.formateur_id==v.formateur_id&&x.jour_debut<=v.jour_fin&&x.jour_fin>=v.jour_debut&&jrs(x.jour_debut>v.jour_debut?x.jour_debut:v.jour_debut,x.jour_fin<v.jour_fin?x.jour_fin:v.jour_fin).some(d=>sdSlots(x,d).some(a=>ov(a,d)))).forEach(x=>cf.push(`session ${fdNom(x.formation_id)} ${sdHor(x)}`))}
+ if(cf.length&&!confirm('Ce formateur est déjà occupé : '+cf.join(' ; ')+'.\n\nEnregistrer quand même ?'))return;
+ await ok(me?sb.from('sessions_div').update(v).eq('id',me):sb.from('sessions_div').insert(v));S.sd=null;charger()}
+async function sdDel(id){const x=(D.sd||[]).find(y=>y.id==id);if(x&&confirm(`Supprimer la session « ${fdNom(x.formation_id)} » et ses ${(x.sessions_div_stagiaires||[]).length} inscrit(s) ?`)){await ok(sb.from('sessions_div').delete().eq('id',id));charger()}}
+async function sdAddP(id){const p=$('pp-'+id).value.trim(),n=$('pn-'+id).value.trim(),e=$('pe-'+id).value.trim();if(!n)return alert('Saisissez au moins le nom.');
+ await ok(sb.from('sessions_div_stagiaires').insert({session_id:id,prenom:p,nom:n,entreprise:e}));charger()}
+async function sdDelP(id){await ok(sb.from('sessions_div_stagiaires').delete().eq('id',id));charger()}
+async function fdAdd(){const n=(prompt('Intitulé de la formation')||'').trim();if(n){await ok(sb.from('formations_div').insert({nom:n}));charger()}}
+async function fdRen(id){const t=D.fd.find(x=>x.id==id),n=(prompt('Intitulé',t.nom)||'').trim();if(n&&n!=t.nom){await ok(sb.from('formations_div').update({nom:n}).eq('id',id));charger()}}
+async function fdDel(id){const t=D.fd.find(x=>x.id==id);if(confirm(`Supprimer l'intitulé « ${t.nom} » ? (impossible s'il a des sessions)`)){await ok(sb.from('formations_div').delete().eq('id',id));charger()}}
+// ---- Suppression : un stagiaire, ou tous ceux d'une famille (semaine affichée) ; ils sont aussi retirés de tous les créneaux du planning ----
+async function delSt(ids){if(!ids.length)return;
+ await ok(sb.from('creneau_stagiaires').delete().in('stagiaire_id',ids));
+ await ok(sb.from('stagiaire_options').delete().in('stagiaire_id',ids));
+ await ok(sb.from('stagiaires').delete().in('id',ids));charger()}
+async function supSt(id){const s=D.st.find(x=>x.id==id);if(!s)return;
+ const n=D.cr.filter(c=>inCr(c,id)).length;
+ if(confirm(`Supprimer ${s.prenom} ${s.nom} ?`+(n?`\nIl sera aussi retiré de ${n} créneau(x) du planning.`:'')))delSt([id])}
+async function viderFam(f){const l=semSt(f),ids=l.map(x=>x.id);if(!ids.length)return;
+ const n=D.cr.filter(c=>c.creneau_stagiaires.some(x=>ids.includes(x.stagiaire_id))).length;
+ if(confirm(`SUPPRIMER LES ${l.length} STAGIAIRES ${f} affichés cette semaine (du ${frc(S.lundi)} au ${frc(add(S.lundi,4))}) ?\n\nIls seront aussi retirés de ${n} créneau(x) du planning. Les créneaux restent (vides). Action définitive.`)&&confirm(`Dernière confirmation : supprimer ${l.length} stagiaire(s) ${f} ?`))delSt(ids)}
+// Onglet d'une famille : ▶ début, ■ fin, Form./Test/F+T = activité du jour, abs. = absent. Clic sur un jour = menu.
+function tabFam(f){const jr=SJ(),l=semSt(f);
+ if(!l.length)return '<small>Aucun stagiaire cette semaine.</small>';
+ let tot=0;
+ return `<p><button class="del np" onclick="viderFam('${f}')">Vider tous les stagiaires ${f} (${l.length})</button></p><div class="tw"><table class="fam" style="--fc:${FC[f]}"><tr><th>Stagiaire</th><th>Employeur</th><th>Catégories</th><th>Début</th><th>Fin</th><th>UT</th>${JN.map(j=>`<th>${j}</th>`).join('')}<th class="np"></th></tr>`+l.map(s=>{const ap=aPlanifier(s,jr);if(isTest(s))tot+=utPrat(s);
+  return `<tr><td><b>${s.prenom} ${s.nom}</b>${s.theorie_seule?' <span class="th1">📖 théorie seule</span>':''}${presBadge(s)}${ap?` <span class="warn">${ap}</span>`:''}</td><td>${s.entreprise||'—'}</td><td>${(s.categories||[]).join(', ')||'—'}</td><td>${frc(s.date_debut)}</td><td>${frc(s.date_fin)}</td><td><b>${utTxt(s)}</b></td>`+
+  jr.map(d=>{const p=dEnPlace(s,d),dans=s.date_debut&&d>=s.date_debut&&(!s.date_fin||d<=s.date_fin);
+   return `<td class="j ${p?'on':''}" onclick="menuJour('${s.id}','${d}')">${s.date_debut==d?'▶ ':''}${p?abr(dayType(s,d)):dans?'abs.':'·'}${s.date_fin==d?' ■':''}</td>`}).join('')+
+  `<td class="np"><button class="sec" onclick="editSt('${s.id}')">✎</button><button class="del" onclick="supSt('${s.id}')">✕</button></td></tr>`}).join('')+`<tr class="tot"><td colspan="5">Total UT pratique (hors théories)</td><td>${fmt(tot)}</td><td colspan="5"></td><td class="np"></td></tr></table></div>`}
+function menuJour(id,d){const s=D.st.find(x=>x.id==id),b=(l,fn,c)=>`<button class="${c||''}" style="width:100%" onclick="${fn};$('pop').hidden=true">${l}</button>`;
+ $('pop').hidden=false;$('pop').innerHTML=`<div class="pb"><h3>${s.prenom} ${s.nom} — ${d.split('-').reverse().slice(0,2).join('/')}</h3>`+
+  [['Formation','Formation'],['Test','Test'],['Les deux','Formation + Test']].map(([v,l])=>b(l,`jour('${id}','${d}','${v}')`)).join('')+
+  b('Absent ce jour',`jour('${id}','${d}','Absent')`,'sec')+b('▶ Début ici',`debutFin('${id}','date_debut','${d}')`,'sec')+b('■ Fin ici',`debutFin('${id}','date_fin','${d}')`,'sec')+
+  `<button class="sec" style="width:100%" onclick="$('pop').hidden=true">Fermer</button></div>`}
+function jour(id,d,v){const s=D.st.find(x=>x.id==id),r={programme:{...(s.programme||{}),[d]:v}};
+ if(!s.date_debut||d<s.date_debut)r.date_debut=d;          // choisir un jour étend la période si besoin
+ if(s.date_fin&&d>s.date_fin&&v!='Absent')r.date_fin=d;upd('stagiaires',id,r)}
+function debutFin(id,k,d){upd('stagiaires',id,{[k]:d})}
+const contenuStag=()=>{const fr=d=>d.split('-').reverse().join('/');return `<h1>Stagiaires – semaine du ${fr(S.lundi)} au ${fr(add(S.lundi,4))}</h1>`+(S.fam=='Globale'?tabGlobale():`<h3>${S.fam}</h3>`+tabFam(S.fam))};
+let apFn=contenuStag;
+function imprimerStag(){$('pz').innerHTML=apFn();window.print()}
+// ---- Charge testeurs : aperçu coloré. Chaque testeur a, CHAQUE JOUR, sa couleur + sa lettre + sa trame (lisible en noir et blanc) ----
+const TH=['#f87171','#60a5fa','#facc15','#4ade80','#fb923c','#c084fc','#22d3ee','#f472b6','#a3a3a3','#d6a77a'],
+ TP=['','repeating-linear-gradient(45deg,rgba(0,0,0,.4) 0 2px,transparent 2px 6px)','radial-gradient(rgba(0,0,0,.5) 1.2px,transparent 1.7px) 0 0/6px 6px','repeating-linear-gradient(0deg,rgba(0,0,0,.4) 0 2px,transparent 2px 6px)'];
+// une combinaison couleur + trame UNIQUE par testeur et par jour sur toute la semaine (12 couleurs x 4 trames = 48)
+function testMap(){const m={};let k=0;SJ().forEach((d,di)=>{const ids=[];D.cr.filter(c=>c.est_test&&c.jour==d).forEach(c=>{const x=c.formateur_id||'';if(!ids.includes(x))ids.push(x)});
+ const ix=q=>{const i=D.f.findIndex(x=>x.id==q);return i<0?99:i};ids.sort((a,b)=>ix(a)-ix(b));
+ const used=[];m[d]={};ids.forEach(x=>{const f=D.f.find(y=>y.id==x),nom=f?f.nom:'À affecter';let n=1,l;do{l=nom.slice(0,n).toUpperCase();n++}while(used.includes(l)&&n<=nom.length);used.push(l);
+  const bg=TH[k%TH.length],p=TP[Math.floor(k/TH.length)%TP.length];k++;
+  m[d][x]={nom,l:f?l:'?',j:di+1,bg,st:`background-color:${bg};${p?'background-image:'+p+';':''}`}})});return m}
+const tchip=t=>`<span class="tc" style="${t.st}">${esc(t.l)}<sup>${t.j}</sup></span>`;
+function contenuTest(){const tm=testMap(),jr=SJ(),fr=d=>d.split('-').reverse().join('/'),JL=['Lundi','Mardi','Mercredi','Jeudi','Vendredi'];
+ const crs=s=>D.cr.filter(c=>c.est_test&&jr.includes(c.jour)&&inCr(c,s.id)).sort((a,b)=>(a.jour+a.debut).localeCompare(b.jour+b.debut));
+ const tl=c=>{const t=tm[c.jour][c.formateur_id||''];return `<span class="tl">${tchip(t)} ${JN[jr.indexOf(c.jour)]} ${c.debut.slice(0,5)} ${estTh(c)?'Théorie':'Prat.'+(c.categorie?' '+esc(c.categorie):'')} <small>(${esc(t.nom)})</small></span>`};
+ const blocs=FAM.map(f=>{const cle=s=>{const c=crs(s);return c.length?c.map(x=>x.jour+x.debut).join('|'):'~'},l=semSt(f).filter(s=>isTest(s)||crs(s).length).sort((a,b)=>cle(a)<cle(b)?-1:cle(a)>cle(b)?1:0);if(!l.length)return '';      // ordre horaire des tests (puis ordre habituel)
+  return `<h3>${f}</h3><div class="tw"><table class="fam cp" style="--fc:${FC[f]}"><colgroup><col style="width:24%"><col style="width:20%"><col style="width:10%"><col style="width:40%"><col style="width:6%"></colgroup><tr><th>Stagiaire</th><th>Entreprise</th><th>Cat.</th><th>Tests planifiés (testeur du jour)</th><th>UT</th></tr>`+
+   l.map(s=>{const c=crs(s);return `<tr><td><b>${esc(s.prenom)} ${esc(s.nom)}</b>${s.theorie_seule?' <span class="th1">📖 théorie seule</span>':''}</td><td>${esc(s.entreprise||'—')}</td><td>${(s.categories||[]).join(', ')||'—'}</td><td>${c.map(tl).join('<br>')||'<i>non planifié</i>'}</td><td><b>${utTxt(s)}</b></td></tr>`}).join('')+`</table></div>`}).join('');
+ const syn=jr.map((d,i)=>{const ks=Object.keys(tm[d]);if(!ks.length)return '';
+  return `<h3>${JL[i]} ${fr(d)}</h3><table class="fam"><colgroup><col style="width:20%"><col style="width:17%"><col style="width:63%"></colgroup><tr><th>Testeur</th><th>UT du jour</th><th>Candidats testés</th></tr>`+ks.map(k=>{const t=tm[d][k],
+   cs=D.cr.filter(c=>c.est_test&&c.jour==d&&(c.formateur_id||'')==k).sort((a,b)=>a.debut.localeCompare(b.debut)),tot=cs.reduce((a,c)=>a+utCr(c),0),pra=cs.filter(estPr).reduce((a,c)=>a+utCr(c),0);
+   return `<tr><td>${tchip(t)} <b>${esc(t.nom)}</b></td><td><b>${fmt(tot)} / ${fmt(+D.lim.max_total)} UT</b><br><small>dont pratique ${fmt(pra)} / ${fmt(+D.lim.max_pratique)}</small>${k?`<br><small>libre : ${libres(k,d,null).lib.map(x=>hhmm(x[0])+'–'+hhmm(x[1])).join(' · ')||'—'}</small>`:''}</td><td>${cs.map(c=>`${c.debut.slice(0,5)}-${c.fin.slice(0,5)} ${c.famille}${c.categorie?' '+esc(c.categorie):''} ${estTh(c)?'théorie':'pratique'} : ${c.creneau_stagiaires.map(x=>{const q=D.st.find(y=>y.id==x.stagiaire_id);return q?esc(q.prenom+' '+q.nom):'?'}).join(', ')||(c.previsionnel?'🗓 prévisionnel (candidats à confirmer)':'<i>vide</i>')}`).join('<br>')}</td></tr>`}).join('')+`</table>`}).join('');
+ return `<h1>Charge des testeurs – semaine du ${fr(S.lundi)} au ${fr(add(S.lundi,4))}</h1><p class="leg">Tous les tests planifiés. Chaque testeur a, chaque jour, sa couleur + sa lettre + sa trame (un même testeur change de couleur à chaque jour, jamais au cours d'une même journée).</p>`+(syn?`<h2>Synthèse par jour et par testeur</h2>${syn}<h2>Par stagiaire</h2>${blocs||'<small>Aucun stagiaire.</small>'}`:'<small>Aucun test planifié cette semaine.</small>')}
+// Aperçu plein écran : la feuille A4 telle qu'imprimée, zoomable (− / + / Ajuster, ou pincer l'écran)
+let apZ=1;
+function apercuStag(fn){apFn=fn||contenuStag;let o=$('ap');if(!o){o=document.createElement('div');o.id='ap';document.body.appendChild(o)}
+ o.innerHTML=`<div class="apbar"><button onclick="apZoom(-.15)">−</button><b id="apz"></b><button onclick="apZoom(.15)">+</button><button class="sec" onclick="apFit()">Ajuster</button><button onclick="imprimerStag()">🖨 Imprimer</button><button class="del" onclick="$('ap').remove()">✕ Fermer</button></div><div class="apscroll"><div class="apsheet apv" id="aps">${apFn()}</div></div>`;apFit()}
+function apZoom(d){apZ=Math.max(.5,Math.min(3.5,Math.round((apZ+d)*100)/100));$('aps').style.zoom=apZ;$('apz').textContent=Math.round(apZ*100)+' %'}
+function apFit(){apZ=Math.max(.5,Math.min(3.5,(innerWidth-16)/794));apZoom(0)}
+// ---- Saisie rapide : plusieurs stagiaires d'une même recommandation / même début, catégories par ligne ----
+function lotSt(fam){const t=aujd(),d=SJ().includes(t)?t:S.lundi;S.lot={fam:fam||'R482',ty:'Formation',th:false,d,f:'',e:'',rows:Array.from({length:6},()=>({n:'',p:'',e:'',c:[]}))};lotRender()}
+function lotRender(){const L=S.lot,cs=catsFam(L.fam);$('sf').hidden=false;
+ $('sf').innerHTML=`<h3>⚡ Saisie rapide</h3><div class="grid"><select onchange="S.lot.fam=this.value;S.lot.rows.forEach(r=>r.c=[]);lotRender()">${FAM.map(r=>`<option ${r==L.fam?'selected':''}>${r}</option>`).join('')}</select>
+  <select onchange="S.lot.ty=this.value">${['Formation','Test','Les deux'].map(t=>`<option ${t==L.ty?'selected':''}>${t}</option>`).join('')}</select>
+  <label>Début <input type="date" value="${L.d}" onchange="S.lot.d=this.value"></label><label>Fin <input type="date" value="${L.f}" onchange="S.lot.f=this.value"></label>
+  <input list="lent" autocomplete="off" placeholder="Entreprise commune (facultatif)" value="${esc(L.e)}" oninput="S.lot.e=this.value"></div>
+  <label class="k"><input type="checkbox" ${L.th?'checked':''} onchange="S.lot.th=this.checked;lotRender()"> 📖 Théorie seulement (pas de pratique, catégorie non requise)</label>
+  <small>Une ligne par candidat ; cochez ses catégories. Même recommandation et même début pour tous.</small>
+  <table class="lot">`+L.rows.map((r,i)=>`<tr><td>${i+1}</td><td><input list="lnom" autocomplete="off" placeholder="Nom" value="${esc(r.n)}" oninput="S.lot.rows[${i}].n=this.value"></td><td><input list="lpre" autocomplete="off" placeholder="Prénom" value="${esc(r.p)}" oninput="S.lot.rows[${i}].p=this.value"></td>
+   <td><input list="lent" autocomplete="off" placeholder="Entreprise (si différente)" value="${esc(r.e)}" oninput="S.lot.rows[${i}].e=this.value"></td><td>${cs.map(c=>`<label class="k"><input type="checkbox" ${r.c.includes(c.nom)?'checked':''} onchange="lotCat(${i},'${c.nom}',this.checked)"> ${c.nom}</label>`).join('')||'<small>—</small>'}${i&&cs.length?` <button class="sec" title="Mêmes catégories que la ligne au-dessus" onclick="S.lot.rows[${i}].c=[...S.lot.rows[${i-1}].c];lotRender()">↧</button>`:''}</td></tr>`).join('')+`</table>
+  <button class="sec" onclick="lotAdd(1)">+ 1 ligne</button><button class="sec" onclick="lotAdd(5)">+ 5 lignes</button> <button onclick="lotSave()">Enregistrer tous</button><button class="sec" onclick="$('sf').hidden=true">Annuler</button>`;$('sf').scrollIntoView()}
+function lotCat(i,c,v){const a=S.lot.rows[i].c;v?a.includes(c)||a.push(c):S.lot.rows[i].c=a.filter(x=>x!=c)}
+function lotAdd(n){for(let i=0;i<n;i++)S.lot.rows.push({n:'',p:'',e:'',c:[]});lotRender()}
+async function lotSave(){const L=S.lot,rows=L.rows.filter(r=>r.n.trim()||r.p.trim()||r.c.length);
+ if(!rows.length)return alert('Aucun candidat saisi.');
+ const bad=L.rows.map((r,i)=>(r.n.trim()||r.p.trim()||r.c.length)&&(!r.n.trim()||!r.p.trim())?i+1:0).filter(Boolean);if(bad.length)return alert('Nom et prénom obligatoires (ligne '+bad.join(', ')+').');
+ if(L.d&&L.f&&L.f<L.d)return alert('La fin est avant le début.');
+ const sc=catsFam(L.fam).length&&!L.th?rows.filter(r=>!r.c.length):[];
+ if(sc.length&&!confirm('ATTENTION : '+sc.length+' candidat(s) sans catégorie ('+sc.map(r=>r.p.trim()+' '+r.n.trim()).join(', ')+'). Sans catégorie ils ne pourront pas être placés en test.\n\nEnregistrer quand même ?'))return;
+ {const dd=[];rows.forEach(r=>doublonsSt({nom:r.n.trim(),prenom:r.p.trim(),entreprise:r.e.trim()||L.e.trim(),famille:L.fam,date_debut:L.d||null,date_fin:L.f||null}).forEach(x=>dd.push(x)));if(dd.length&&!confirm('⚠ Déjà inscrit ?\n\n'+dd.map(dblTxt).join('\n')+'\n\nCréer quand même ?'))return}
+ await ok(sb.from('stagiaires').insert(rows.map(r=>({nom:r.n.trim(),prenom:r.p.trim(),entreprise:r.e.trim()||L.e.trim(),famille:L.fam,type:L.ty,date_debut:L.d||null,date_fin:L.f||null,categories:r.c,...(L.th?{theorie_seule:true}:{})}))));
+ if(L.d){const wd=(new Date(L.d+'T12:00').getDay()+6)%7;S.lundi=add(L.d,-wd)}S.fam=L.fam;$('sf').hidden=true;charger()}
+
+function editSt(id,fam){const s=D.st.find(x=>x.id==id)||{famille:fam,categories:[],type:'Formation'};S.es=id;S.sc=s.categories||[];S.so=new Set(D.so.filter(o=>o.stagiaire_id==id).map(o=>o.categorie+'|'+o.option_id));
+ $('sf').hidden=false;$('sf').innerHTML=`<h3>${id?'Modifier':'Nouveau'} stagiaire</h3><div class="grid"><input id="sn" list="lnom" autocomplete="off" placeholder="Nom" value="${s.nom||''}"><input id="sp" list="lpre" autocomplete="off" placeholder="Prénom" value="${s.prenom||''}"><input id="se" list="lent" autocomplete="off" placeholder="Entreprise" value="${s.entreprise||''}">
+ <select id="sfa" onchange="S.sc=[];catsSt()">${FAM.map(r=>`<option ${r==s.famille?'selected':''}>${r}</option>`).join('')}</select>
+ <select id="sty">${['Formation','Test','Les deux'].map(t=>`<option ${t==s.type?'selected':''}>${t}</option>`).join('')}</select>
+ <label>Début <input type="date" id="sd" value="${s.date_debut||''}"></label><label>Fin <input type="date" id="sfi" value="${s.date_fin||''}"></label></div><label class="k"><input type="checkbox" id="sth" ${s.theorie_seule?'checked':''} onchange="optsSt()"> 📖 Théorie seulement (ne passe pas la pratique : 0 UT pratique)</label><div id="sc"></div><div id="so"></div>
+ <button onclick="saveSt()">Enregistrer</button><button class="sec" onclick="$('sf').hidden=true">Annuler</button>`;catsSt();$('sf').scrollIntoView()}
+function catsSt(){setTimeout(optsSt,0);const l=D.cat.filter(c=>c.famille==$('sfa').value);$('sc').innerHTML=l.length?'Catégories : '+l.map(c=>`<label class="k"><input type="checkbox" class="sc" onchange="optsSt()" value="${c.nom}" ${S.sc.includes(c.nom)?'checked':''}> ${c.nom}</label>`).join(''):'<small>Pas de sous-catégorie.</small>'}
+function optsSt(){if(!$('so'))return;document.querySelectorAll('.so').forEach(x=>x.checked?S.so.add(x.value):S.so.delete(x.value));
+ const fam=$('sfa').value,cats=[...document.querySelectorAll('.sc:checked')].map(x=>x.value),ops=D.opt.filter(o=>o.famille==fam),lst=cats.length?cats:(D.cat.some(c=>c.famille==fam)?[]:['']);
+ const pr=$('sth')&&$('sth').checked?0:lst.reduce((a,c)=>a+bar(fam,c)+ops.filter(o=>S.so.has(c+'|'+o.id)).reduce((b,o)=>b+ +o.ut,0),0);
+ $('so').innerHTML=(ops.length&&lst.length?'<b>Options testées (+UT)</b>'+lst.map(c=>`<div>${c||'Catégorie unique'} : ${ops.map(o=>`<label class="k"><input type="checkbox" class="so" onchange="optsSt()" value="${c}|${o.id}" ${S.so.has(c+'|'+o.id)?'checked':''}> ${o.nom} (+${fmt(+o.ut)})</label>`).join('')}</div>`).join(''):'')+
+  `<p><b>UT pratique d'un test : ${fmt(pr)}</b> (catégories + options). La théorie compte ${fmt(+D.lim.ut_theorie)} UT par session pour le testeur, pas par candidat.</p>`}
+async function saveSt(){const r={nom:$('sn').value.trim(),prenom:$('sp').value.trim(),entreprise:$('se').value.trim(),famille:$('sfa').value,type:$('sty').value,
+  date_debut:$('sd').value||null,date_fin:$('sfi').value||null,categories:[...document.querySelectorAll('.sc:checked')].map(x=>x.value)};
+ {const th=$('sth').checked,cur=D.st.find(x=>x.id==S.es);if(th||(cur&&cur.theorie_seule))r.theorie_seule=th}
+ if(!r.nom||!r.prenom)return alert('Nom et prénom obligatoires.');
+ if(r.date_debut&&r.date_fin&&r.date_fin<r.date_debut)return alert('La fin est avant le début.');
+ if(!r.theorie_seule&&catsFam(r.famille).length&&!r.categories.length&&!confirm('ATTENTION : aucune catégorie cochée pour ce candidat. Sans catégorie il ne pourra pas être placé en test.\n\nEnregistrer quand même ?'))return;
+{if(!S.es){const dd=doublonsSt(r);if(dd.length&&!confirm('⚠ Déjà inscrit ?\n\n'+dd.map(dblTxt).join('\n')+'\n\nCréer quand même ce stagiaire ?'))return}}
+ optsSt();let id=S.es;if(id)await upd('stagiaires',id,r);else id=(await ok(sb.from('stagiaires').insert(r).select()))[0].id;
+ await ok(sb.from('stagiaire_options').delete().eq('stagiaire_id',id));
+ const rows=[...S.so].map(k=>{const[c,o]=k.split('|');return{stagiaire_id:id,categorie:c,option_id:o}}).filter(x=>(D.opt.find(z=>z.id==x.option_id)||{}).famille==r.famille&&(r.categories.length?r.categories.includes(x.categorie):x.categorie==''));
+ if(rows.length)await ok(sb.from('stagiaire_options').insert(rows));charger()}
+async function importCsv(file){for(const l of (await file.text()).split(/\r?\n/).filter(x=>x.trim())){const[nom,prenom,ent,fam,cats,type,d1,d2]=l.split(';').map(x=>x.trim());if(!FAM.includes(fam))continue;
+  await ok(sb.from('stagiaires').insert({nom,prenom,entreprise:ent,famille:fam,categories:cats?cats.split('|'):[],type:type||'Formation',date_debut:d1||null,date_fin:d2||null}))}charger()}
+
+// ---- Planning : créneaux ----
+function pPlanning(){$('pg').innerHTML=wk()+`<div class="card"><button onclick="imprimer('')">Imprimer la semaine (global)</button> <select id="pf">${opt(D.f,'id',x=>x.nom)}<option value="tous">Tous (1 page par formateur)</option></select><button class="sec" onclick="imprimer($('pf').value)">Imprimer ce formateur</button></div>`+sansCatCard()+trouCard()+chargeCard()+'<p><button class="sec" onclick="apercuStag(contenuTest)">🎨 Aperçu charge testeurs (couleurs par testeur et par jour)</button></p>'+planTabs()+`<div class="card" id="fc"></div><div class="card" data-fold="pl:cren"><h3>Créneaux de la semaine</h3>${JN.map((j,i)=>{const d=add(S.lundi,i);
+ return `<h4>${j} ${d.slice(8)}/${d.slice(5,7)}</h4>`+((D.cr.filter(c=>c.jour==d).map(cardCr).join('')+divJour(d))||'<small>—</small>')}).join('')}</div>`;formCr();if(S.q)qsPlan(S.q)}
+function cardCr(c){const L=D.lim,n=c.creneau_stagiaires.length,cats=catsDe(c);
+ const tot=estPr(c)?`<br><b>Total créneau : ${fmt(utCr(c))} UT (pratique)</b>`:estTh(c)?`<br><b>Session de théorie : ${fmt(utCr(c))} UT</b> · ${n} / ${L.max_candidats} candidats${n>+L.max_candidats?' <span class="warn">DÉPASSÉ</span>':''}`:'';
+ return `<div class="card" style="border-left-color:${FC[c.famille]}"><b style="font-size:1.15em">${c.debut.slice(0,5)}–${c.fin.slice(0,5)}</b> <span class="fb" style="background:${FC[c.famille]}">${c.famille}</span>${cats.length?`<span class="cb">Catégorie ${cats.join(' · ')}</span>`:''}
+ <div style="margin:6px 0">${typeB(c)}${c.rattrapage?' <span class="cb">↻ RATTRAPAGE</span>':''}</div>${nomF(c)}${c.salle_id?' · '+(D.sa.find(x=>x.id==c.salle_id)||{}).nom:''}<br>
+ ${trou(c)?`<div class="trou">⚠ ${trou(c)}</div>`:''}${c.creneau_stagiaires.map(x=>tagSt(x.stagiaire_id,c,x)+`<button class="del" style="min-height:28px;padding:2px 8px" title="Retirer ce candidat du créneau" onclick="retirer('${c.id}','${x.stagiaire_id}')">✕</button>`).join('')}${tot}${c.consigne?'<br><i>Consigne : '+esc(c.consigne)+'</i>':''}<br>
+ <button class="sec" onclick="editCr('${c.id}')">✎ Modifier</button><button class="sec" onclick="deplCr('${c.id}')">⇄ Déplacer</button><button class="sec" onclick="editCr('${c.id}',1)">⧉ Dupliquer</button><button class="del" onclick="sup('creneaux','${c.id}')">Supprimer le créneau</button></div>`}
+// Retire un candidat d'un créneau (le créneau reste, signalé « à combler » s'il est vide ou incomplet)
+async function retirer(cid,sid){if(!confirm('Retirer '+nomSt(sid)+' de ce créneau ?'))return;await ok(sb.from('creneau_stagiaires').delete().eq('creneau_id',cid).eq('stagiaire_id',sid));charger()}
+// Bandeau « à combler » en haut du planning
+function trouCard(){const l=D.cr.filter(c=>trou(c));return l.length?`<div class="card trou"><b>⚠ ${l.length} créneau(x) à combler</b> :<br>${l.map(c=>`${frc(c.jour)} ${c.debut.slice(0,5)}–${c.fin.slice(0,5)} ${c.famille}${c.categorie?' '+c.categorie:''} · ${nomF(c)} — ${trou(c)} <button class="sec" onclick="editCr('${c.id}')">✎ Modifier</button>`).join('<br>')}</div>`:''}
+// Modifier / Dupliquer : charge le créneau dans le formulaire du haut de page et y amène l'écran
+function editCr(id,dup){formCr(id,dup);const e=$('fc');e.classList.remove('flash');void e.offsetWidth;e.classList.add('flash');e.scrollIntoView({behavior:'smooth',block:'start'})}
+// Déplacer : jour, horaires ou formateur ; conflits et limites de charge revérifiés avant enregistrement
+function deplCr(id){const c=D.cr.find(x=>x.id==id);if(!c)return;
+ $('pop').hidden=false;$('pop').innerHTML=`<div class="pb"><h3>⇄ Déplacer le créneau</h3><p class="leg">${c.famille} · ${c.debut.slice(0,5)}–${c.fin.slice(0,5)} · ${frc(c.jour)}</p>
+ <label>Jour <input type="date" id="dj" value="${c.jour}"></label><label>Début <input type="time" id="dd" value="${c.debut.slice(0,5)}"></label><label>Fin <input type="time" id="df" value="${c.fin.slice(0,5)}"></label>
+ <label>Formateur (testeur) <select id="dfo"><option value="">— à affecter —</option></select></label>
+ <button style="width:100%" onclick="moveCr('${id}')">Déplacer</button><button class="sec" style="width:100%" onclick="$('pop').hidden=true">Annuler</button></div>`;
+ // un testeur ayant atteint ses UT pratique ce jour-là disparaît de la liste (test pratique)
+ const maj=()=>{const j=$('dj').value,cur=$('dfo').value||c.formateur_id,pr=estPr(c),ful=pr&&j?D.f.filter(f=>charge(f.id,j,D.cr.filter(x=>x.id!=id)).pra>=+D.lim.max_pratique-1e-9).map(f=>f.id):[];
+  $('dfo').innerHTML='<option value="">— à affecter —</option>'+opt(D.f.filter(f=>!ful.includes(f.id)),'id',x=>x.nom,ful.includes(cur)?'':cur)};
+ $('dj').onchange=maj;maj()}
+async function moveCr(id){const c=D.cr.find(x=>x.id==id);if(!c){$('pop').hidden=true;return alert('Créneau introuvable : données rechargées.')}
+ const m={jour:$('dj').value,debut:$('dd').value,fin:$('df').value,formateur_id:$('dfo').value||null};
+ if(!m.jour||!m.debut||!m.fin)return alert('Complétez le jour et les horaires.');
+ if(m.fin<=m.debut)return alert('Heure de fin invalide.');
+ const r={...c,...m},sel=c.creneau_stagiaires.map(x=>x.stagiaire_id);
+ if(!await verifierEtConfirmer(r,sel,id,c.creneau_stagiaires))return;      // coûts UT déjà figés : conservés tels quels
+ const d=await ok(sb.from('creneaux').update(m).eq('id',id).eq('maj_le',c.maj_le).select());
+ $('pop').hidden=true;
+ if(d.length)await nettoyerVides(id,r);
+ if(!d.length)alert('Ce créneau a été modifié sur un autre poste : le déplacement n\'a PAS été enregistré. Données rechargées.');
+ else if(m.jour<S.lundi||m.jour>add(S.lundi,4))alert('Créneau déplacé au '+frc(m.jour)+' (autre semaine : changez de semaine pour le voir).');
+ charger()}
+function formCr(id,dup){const c=D.cr.find(x=>x.id==id)||{jour:S.lundi,debut:'08:00',fin:'12:00',famille:'R489',est_formation:true,nature_formation:'Pratique',est_test:false,nature_test:'Pratique',creneau_stagiaires:[]};
+ S.edit=id?{id,dup}:null;S.sel=c.creneau_stagiaires.map(x=>x.stagiaire_id);S.cc=c.categorie||'';
+ const nat=(n,v)=>`<select id="${n}"><option ${v!='Théorie'?'selected':''}>Pratique</option><option ${v=='Théorie'?'selected':''}>Théorie</option></select>`;
+ $('fc').innerHTML=`<h3>${id&&!dup?'✎ Modification du créneau du '+frc(c.jour)+' à '+c.debut.slice(0,5):id?'⧉ Duplication : changez le jour ou l\'heure, puis Enregistrer':'Nouveau créneau'}</h3><div class="grid"><input type="date" id="cj" value="${c.jour}"><input type="time" id="cd" value="${c.debut.slice(0,5)}"><input type="time" id="cf" value="${c.fin.slice(0,5)}">
+  <select id="cfo"><option value="">— formateur à affecter —</option>${opt(D.f,'id',x=>x.nom,c.formateur_id)}</select><select id="cfa">${FAM.map(r=>`<option ${r==c.famille?'selected':''}>${r}</option>`).join('')}</select><select id="cca"></select></div>
+  <label class="k"><input type="checkbox" id="cef" ${c.est_formation?'checked':''}> Formation</label>${nat('cnf',c.nature_formation)}
+  <label class="k"><input type="checkbox" id="cet" ${c.est_test?'checked':''}> Test</label>${nat('cnt',c.nature_test)}
+  <label class="k" id="lrat" style="border:2px solid #111;border-radius:8px;padding:2px 8px" title="Candidat qui repasse une catégorie déjà testée : il reste proposé même s'il est déjà placé dans cette catégorie"><input type="checkbox" id="crat" ${c.rattrapage?'checked':''}> ↻ Rattrapage</label>
+  <label class="k" id="lpv" style="border:2px dashed #111;border-radius:8px;padding:2px 8px" title="Créneau prévu mais sans candidats (et éventuellement sans formateur) : il n'est jamais supprimé automatiquement. Cochez des stagiaires pour le transformer en créneau normal."><input type="checkbox" id="cpv" ${c.previsionnel?'checked':''}> 🗓 Prévisionnel</label>
+  <div id="cso">Salle (théorie) : <select id="csa"><option value="">—</option>${opt(D.sa,'id',x=>x.nom,c.salle_id)}</select></div><div id="chint" class="leg"></div><div id="cdispo" class="leg"></div><div id="cs"></div><textarea id="cco" rows="2" placeholder="Consigne / commentaire pour le formateur concerné" style="width:100%;box-sizing:border-box">${esc(c.consigne||'')}</textarea>
+  <button onclick="saveCr()">Enregistrer</button>${id?'<button class="sec" onclick="S.edit=null;render()">Annuler</button>':''}`;
+ ['cj','cef','cet','cnf','cnt','cca','cfo','crat'].forEach(i=>$(i).onchange=()=>{raf();majFin('auto')});$('cfa').onchange=()=>{raf(1);majFin('auto')};
+ $('cef').onchange=()=>bascule('f');$('cet').onchange=()=>bascule('t');
+ $('cd').onchange=()=>majFin('auto');$('cf').onchange=()=>majFin('clamp');
+ raf(1,1);majFin('hint')}
+// Cocher Test décoche Formation (et inversement), sauf si la journée du candidat est marquée « Les deux » dans Stagiaires
+function lesDeux(){const F=$('cfa').value,d=$('cj').value,ch=[...document.querySelectorAll('.cs:checked')].map(x=>x.value),
+ l=D.st.filter(s=>s.famille==F&&(ch.length?ch.includes(s.id):dEnPlace(s,d)));return l.some(s=>dayType(s,d)=='Les deux')}
+function bascule(w){if(!lesDeux()){if(w=='t'&&$('cet').checked)$('cef').checked=false;if(w=='f'&&$('cef').checked)$('cet').checked=false}raf();majFin('auto')}
+// Test pratique seul : catégorie obligatoire ; liste = candidats inscrits dans cette catégorie ; fin plafonnée à début + UT
+const testPra=()=>$('cet').checked&&$('cnt').value=='Pratique'&&!$('cef').checked;
+// Rafraîchit catégories, salle (seulement si Théorie) et stagiaires proposés
+function raf(fam,init){if(!init)S.sel=[...document.querySelectorAll('.cs:checked')].map(x=>x.value);
+ const F=$('cfa').value,f=$('cef').checked,t=$('cet').checked,th=(f&&$('cnf').value=='Théorie')||(t&&$('cnt').value=='Théorie'),tp=testPra();$('cso').style.display=th?'':'none';if($('lrat'))$('lrat').style.opacity=t?'1':'.45';
+ const me=S.edit&&!S.edit.dup?S.edit.id:null,d=$('cj').value,rat=!!($('crat')&&$('crat').checked),tpc=t&&$('cnt').value=='Pratique',tpx=tpc&&!rat,deja=(s,k)=>tpx&&k&&(D.cr.some(c=>c.id!=me&&estPr(c)&&inCr(c,s.id)&&(!c.categorie||c.categorie==k))||(D.prat||[]).some(x=>x.stagiaire_id==s.id&&x.creneaux.id!=me&&x.creneaux.famille==F&&(!x.creneaux.categorie||x.creneaux.categorie==k))),dispo=s=>s.famille==F&&!(tpc&&s.theorie_seule)&&(S.sel.includes(s.id)||dEnPlace(s,d)&&((f&&dayType(s,d)!='Test')||(t&&dayType(s,d)!='Formation')));
+ {const prev=fam&&!init?'':(S.cc!=null?S.cc:$('cca').value);S.cc=null;const all=catsFam(F);
+  const held=tpx?all.filter(k=>D.st.some(s=>dispo(s)&&aCat(s,k.nom)&&!deja(s,k.nom))):all;if(prev&&!held.some(k=>k.nom==prev)&&all.some(k=>k.nom==prev))held.push(all.find(k=>k.nom==prev));
+  $('cca').innerHTML=`<option value="">${tpc?'— catégorie testée —':'Toutes catégories'}</option>`+held.map(k=>`<option ${k.nom==prev?'selected':''}>${k.nom}</option>`).join('');$('cca').style.display=all.length?'':'none'}
+ const cat=$('cca').value,need=tpc&&catsFam(F).length&&!cat;
+ if(cat&&!init)S.sel=S.sel.filter(id=>aCat(D.st.find(x=>x.id==id)||{},cat));
+ const fo=$('cfo'),pv=fo.value,okF=D.f.filter(x=>!t||habil(x.id,F,cat||null)),pn=D.f.find(x=>x.id==pv);
+ fo.innerHTML='<option value="">— formateur à affecter —</option>'+opt(okF,'id',x=>x.nom,okF.some(x=>x.id==pv)?pv:'');
+ const l=need?[]:D.st.filter(s=>dispo(s)&&(!cat||aCat(s,cat))&&!deja(s,cat));
+ $('cs').innerHTML='<b>Stagiaires</b>'+(cat?` <small>(inscrits en ${F} ${cat})</small>`:'')+' <button class="sec" onclick="selAll(true)">Tout cocher</button><button class="sec" onclick="selAll(false)">Tout décocher</button><br>'+(tpc&&cat&&!rat?'<small>Un candidat absent de la liste est déjà placé dans cette catégorie : cochez « ↻ Rattrapage » s\'il la repasse.</small><br>':'')+(need?'<small>Choisissez d\'abord la catégorie testée : seuls les candidats inscrits dans cette catégorie et pas encore placés dans cette catégorie (sur aucun jour) sont proposés.</small>':l.map(x=>`<label class="k"><input type="checkbox" class="cs" value="${x.id}" ${S.sel.includes(x.id)?'checked':''} onchange="majFin('auto')"> ${x.prenom} ${x.nom}</label>`).join('')||'<small>Aucun stagiaire disponible (déjà tous placés ou absents ce jour).</small>')}
+// Durée : fin = début + UT des candidats cochés (1 UT = 1 h). 'auto' recalcule la fin, 'clamp' ramène une fin trop tardive au maximum, 'hint' affiche seulement l'indication.
+function capMin(){if(!testPra())return null;const cat=$('cca').value;if(!cat&&catsFam($('cfa').value).length)return null;
+ const u=[...document.querySelectorAll('.cs:checked')].reduce((a,x)=>a+utPrat(D.st.find(y=>y.id==x.value)||{categories:[]},cat),0);return u>0?Math.round(u*60):null}
+function pris(){const j=$('cj').value,fo=$('cfo').value,F=$('cfa').value,cat=$('cca').value,me=S.edit&&!S.edit.dup?S.edit.id:null;if(!$('cet').checked)return '';
+ const l=D.cr.filter(c=>c.id!=me&&c.creneau_stagiaires.length&&c.jour==j&&c.est_test&&((fo&&c.formateur_id==fo)||(cat&&c.categorie&&(c.famille==F&&c.categorie==cat||partners(F,cat).includes(cle(c.famille,c.categorie)))))).sort((a,b)=>a.debut.localeCompare(b.debut));
+ const g=capDe({est_test:true,nature_test:'Pratique',famille:F,categorie:cat}),q=!g?'':g.ut?(()=>{const u=utJour(D.cr.filter(c=>c.jour==j),me,g),re=r2(g.ut-u),un=bar(F,cat);return ` Quota ce jour (${g.nom}) : ${fmt(u)} / ${g.ut} UT${un>0?` → encore ${Math.max(0,Math.floor(re/un+1e-9))} candidat(s) en ${F} ${cat} (${fmt(un)} UT)`:''}.`})():` Candidats ce jour (${g.nom}) : ${candJour(D.cr.filter(c=>c.jour==j),me,g).size} / ${g.cand}.`;
+ return q+(l.length?' ⛔ Déjà pris ce jour : '+l.map(c=>`${c.debut.slice(0,5)}–${c.fin.slice(0,5)} (${c.famille}${c.categorie?' '+c.categorie:''}, ${nomF(c).replace(/<[^>]+>/g,'')})`).join(' ; ')+'.':'')}
+// Plages de travail d'un testeur (modifiable ici) : 8h-12h et 13h-16h30
+const PLAGES=[['08:00','12:00'],['13:00','17:00']],hhmm=m=>String(Math.floor(m/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0');
+// Plages libres d'un formateur un jour donné : ses créneaux occupés (avec candidats, ou prévisionnels) sont retirés des plages de travail
+function libres(fid,jour,me,extra){if(!fid||!jour)return {occ:[],lib:[]};
+ const occ=divOcc(fid,jour).concat(D.cr.filter(c=>c.id!=me&&c.formateur_id==fid&&c.jour==jour&&(c.creneau_stagiaires.length||c.previsionnel)).map(c=>[mins(c.debut),mins(c.fin)])).concat(extra||[]).sort((a,b)=>a[0]-b[0]),lib=[];
+ PLAGES.forEach(([a,b])=>{let cur=mins(a);const end=mins(b);occ.forEach(([x,y])=>{if(y<=cur||x>=end)return;if(x>cur)lib.push([cur,x]);cur=Math.max(cur,y)});if(cur<end)lib.push([cur,end])});
+ return {occ,lib:lib.filter(r=>r[1]-r[0]>=15)}}
+function plageDe(a,b){$('cd').value=hhmm(a);$('cf').value=hhmm(b);majFin('auto')}
+// Créneaux de AUTRES testeurs qui interdisent un horaire : même catégorie (un seul testeur à la fois) ou catégorie incompatible (EXCL)
+function interdits(jour,me,F,cat){if(!$('cet').checked||!cat)return [];const p=partners(F,cat);
+ return D.cr.filter(c=>c.id!=me&&c.jour==jour&&c.est_test&&c.categorie&&c.creneau_stagiaires.length&&((c.famille==F&&c.categorie==cat)||p.includes(cle(c.famille,c.categorie)))).map(c=>[mins(c.debut),mins(c.fin)])}
+// Horaire suggéré : matinée d'abord (fin au plus tard 12h), puis l'après-midi ; on garde si possible 1 UT de théorie derrière la pratique (fin soft 16h15 - réserve) ; 17h seulement en dernier recours
+function suggere(fid,jour,me,dur,pratique,extra){if(!fid||!jour||!dur)return null;
+ const occ=divOcc(fid,jour).concat(D.cr.filter(c=>c.id!=me&&c.formateur_id==fid&&c.jour==jour&&(c.creneau_stagiaires.length||c.previsionnel)).map(c=>[mins(c.debut),mins(c.fin)]),extra||[]);
+ const th=D.cr.some(c=>c.id!=me&&c.formateur_id==fid&&c.jour==jour&&c.est_test&&c.nature_test=='Théorie'),res=pratique&&!th?Math.round((+D.lim.ut_theorie||1)*60):0;
+ const pl=PLAGES.map(([a,b])=>[mins(a),mins(b)]),st=[...new Set([...pl.map(p=>p[0]),...occ.map(o=>o[1])])].sort((a,b)=>a-b);
+ for(const lim of [16*60+15-res,17*60])for(const a of st){const p=pl.find(p=>a>=p[0]&&a<p[1]);if(!p)continue;const b=a+dur;if(b>p[1])continue;if(p[0]>=13*60&&b>lim)continue;if(occ.some(o=>o[0]<b&&o[1]>a))continue;return [a,b,lim==17*60&&p[0]>=13*60&&b>16*60+15-res]}
+ return null}
+// Théories habituelles (test) : proposées telles quelles quand elles sont libres ; la meilleure = celle qui laisse le moins de temps mort avant elle
+const THEO=[['08:00','09:00'],['10:30','11:30'],['11:00','12:00'],['13:00','14:00'],['15:00','16:00'],['15:30','16:30']];
+function theoLibres(occ){const pl=PLAGES.map(([a,b])=>[mins(a),mins(b)]),l=THEO.map(([a,b])=>[mins(a),mins(b)]).filter(([a,b])=>pl.some(p=>a>=p[0]&&b<=p[1])&&!occ.some(o=>o[0]<b&&o[1]>a));
+ let best=null,bg=1e9;l.forEach(x=>{const p=pl.find(p=>x[0]>=p[0]&&x[0]<p[1]),prev=Math.max(p[0],...occ.filter(o=>o[1]<=x[0]).map(o=>o[1])),g=x[0]-prev;if(g<bg){bg=g;best=x}});return {l,best}}
+// Candidats cochés déjà placés ailleurs ce jour-là (autre testeur, autre catégorie…) : leurs horaires ne sont jamais proposés
+function candPris(jour,me){const ids=[...document.querySelectorAll('.cs:checked')].map(x=>x.value);if(!ids.length||!jour)return [];const o=[];
+ D.cr.filter(c=>c.id!=me&&c.jour==jour&&c.creneau_stagiaires.some(x=>ids.includes(x.stagiaire_id))).forEach(c=>c.creneau_stagiaires.filter(x=>ids.includes(x.stagiaire_id)).forEach(x=>o.push({iv:[mins(c.debut),mins(c.fin)],txt:`${nomSt(x.stagiaire_id)} ${hhmm(mins(c.debut))}–${hhmm(mins(c.fin))} (${c.famille}${c.categorie?' '+c.categorie:''}, ${nomF(c).replace(/<[^>]+>/g,'')})`})));return o}
+function dispoLine(){const e=$('cdispo');if(!e)return;const fo=$('cfo').value,j=$('cj').value,nf=fFull(j,S.edit&&!S.edit.dup?S.edit.id:null),note=nf.length?`<small>🚫 Complets ce jour (${fmt(+D.lim.max_pratique)} UT de pratique atteintes), retirés de la liste : ${nf.map(f=>esc(f.nom)).join(', ')}</small><br>`:'';if(!fo||!j){e.innerHTML=note;return}
+ const me=S.edit&&!S.edit.dup?S.edit.id:null,F=$('cfa').value,cat=$('cca').value,ec=interdits(j,me,F,cat),cp=candPris(j,me),ex=ec.concat(cp.map(x=>x.iv)),r=libres(fo,j,me,ex),r0=libres(fo,j,me),nm=(D.f.find(x=>x.id==fo)||{}).nom||'';
+ const th=thT(),un=bar(F,cat),dur=th?Math.round((+D.lim.ut_theorie||1)*60):(capMin()||(un>0?Math.round(un*60):null)),sg=$('cet').checked?suggere(fo,j,me,dur,!th,ex):null,bt='type="button" class="sec" style="min-height:30px;padding:2px 8px;margin:2px"';
+ e.innerHTML=note+`<b>${esc(nm)}, ce jour :</b> occupé ${r0.occ.length?r0.occ.map(x=>hhmm(x[0])+'–'+hhmm(x[1])).join(' · '):'<i>rien</i>'}`+(ec.length?`<br><b>⛔ Catégorie déjà prise (autre testeur ou catégorie incompatible) :</b> ${ec.map(x=>hhmm(x[0])+'–'+hhmm(x[1])).join(' · ')}`:'')+(cp.length?`<br><b>⛔ Candidat déjà placé ailleurs :</b> ${cp.map(x=>x.txt).join(' · ')}`:'')+
+ (th&&$('cet').checked?(()=>{const t=theoLibres(r.occ);return `<br><b>📖 Théories habituelles libres :</b> `+(t.l.length?t.l.map(x=>`<button ${bt} onclick="plageDe(${x[0]},${x[1]})">${x==t.best?'⭐ ':''}${hhmm(x[0])}–${hhmm(x[1])}</button>`).join(''):'<i>aucune (voir plages disponibles)</i>')})():$('cet').checked&&dur?`<br><b>⭐ Suggéré :</b> `+(sg?`<button ${bt} onclick="plageDe(${sg[0]},${sg[1]})">${hhmm(sg[0])}–${hhmm(sg[1])}</button>${sg[2]?' <small>(tard : la théorie finira après 16h15)</small>':''}`:'<i>aucune place ce jour-là</i>'+(()=>{const s0=suggere(fo,j,me,dur,!th,[]);return s0&&(ec.length||cp.length)?` <small>— ${esc(nm)} est libre à ${hhmm(s0[0])}, mais cet horaire est bloqué par ${[ec.length?'la catégorie déjà prise par un autre testeur':'',cp.length?'le candidat déjà placé ailleurs':''].filter(Boolean).join(' et ')} (voir ⛔ ci-dessus)</small>`:''})()):'')+
+ `<br><b>✅ Disponible :</b> `+(r.lib.length?r.lib.map(x=>`<button ${bt} onclick="plageDe(${x[0]},${x[1]})">${hhmm(x[0])}–${hhmm(x[1])}</button>`).join(''):'<i>aucune plage libre</i>')}
+const thT=()=>$('cet').checked&&$('cnt').value=='Théorie'&&!$('cef').checked;
+// Testeur ayant déjà atteint ses 6 UT de pratique ce jour-là : il disparaît de la liste des formateurs pour un test pratique
+function fFull(j,me){if(!j||!testPra())return [];return D.f.filter(f=>charge(f.id,j,D.cr.filter(c=>c.id!=me)).pra>=+D.lim.max_pratique-1e-9)}
+function majFo(){const s=$('cfo');if(!s||!s.options)return;const j=$('cj').value,me=S.edit&&!S.edit.dup?S.edit.id:null,ful=fFull(j,me).map(f=>f.id),cur=s.value;
+ F=$('cfa').value,cat=$('cca').value,t=$('cet').checked,lst=D.f.filter(f=>!ful.includes(f.id)&&(!t||habil(f.id,F,cat||null))),garde=lst.some(f=>f.id==cur);
+ s.innerHTML='<option value="">— formateur à affecter —</option>'+opt(lst,'id',x=>x.nom,garde?cur:'');if(!garde)s.value=''}      // ni testeur au quota, ni testeur non habilité pour la catégorie
+function majFin(m){const h=$('chint');if(!h)return;$('cf').readOnly=thT();majFo();dispoLine();const mx=capMin(),d=$('cd').value,pr=pris();
+ if(thT()&&d){const l=mins(d)+Math.round((+D.lim.ut_theorie||1)*60);if(l<=24*60-1)$('cf').value=hhmm(l);const nb=document.querySelectorAll('.cs:checked').length;h.textContent=(nb>+D.lim.max_candidats?`⛔ ${nb} candidats : maximum ${D.lim.max_candidats} par théorie, l'enregistrement sera refusé. `:'')+pr;return}      // la théorie compte TOUJOURS 1 UT (1 h) : la fin est imposée
+ if(mx===null||!d){h.textContent=(testPra()?'Test pratique : choisissez la catégorie et les candidats ; la durée sera limitée à leurs UT (1 UT = 1 h).':'')+pr;return}
+ const lim=mins(d)+mx,txt=`${String(Math.floor(lim/60)).padStart(2,'0')}:${String(lim%60).padStart(2,'0')}`;
+ if(lim<=24*60-1){if(m=='auto'||(m=='clamp'&&$('cf').value&&mins($('cf').value)>lim))$('cf').value=txt}
+ h.textContent=`Durée maximale : ${hm(mx)} (${fmt(mx/60)} UT) → fin au plus tard ${txt}.`+pr}
+// Un créneau « à combler » (vide) recouvert par un créneau désormais pourvu (même recommandation, même testeur ou même catégorie) est supprimé s'il est entièrement couvert, sinon raccourci
+async function nettoyerVides(id,r){const a=r.debut.slice(0,5),b=r.fin.slice(0,5);
+ const v=D.cr.filter(c=>c.id!=id&&!c.previsionnel&&!c.creneau_stagiaires.length&&c.jour==r.jour&&c.famille==r.famille&&((r.formateur_id&&c.formateur_id==r.formateur_id)||(r.categorie&&c.categorie==r.categorie))&&c.debut.slice(0,5)<b&&c.fin.slice(0,5)>a);
+ for(const c of v){const d=c.debut.slice(0,5),f=c.fin.slice(0,5);
+  if(a<=d&&b>=f)await ok(sb.from('creneaux').delete().eq('id',c.id));
+  else if(a<=d&&mins(f)-mins(b)>=10)await ok(sb.from('creneaux').update({debut:b}).eq('id',c.id));
+  else if(b>=f&&mins(a)-mins(d)>=10)await ok(sb.from('creneaux').update({fin:a}).eq('id',c.id))}}
+async function saveCr(){
+ const th=$('cso').style.display!='none',r={jour:$('cj').value,debut:$('cd').value,fin:$('cf').value,formateur_id:$('cfo').value||null,salle_id:th?($('csa').value||null):null,famille:$('cfa').value,categorie:$('cca').value||null,consigne:$('cco').value.trim()||null,
+  est_formation:$('cef').checked,nature_formation:$('cef').checked?$('cnf').value:null,est_test:$('cet').checked,nature_test:$('cet').checked?$('cnt').value:null};
+ const sel=[...document.querySelectorAll('.cs:checked')].map(x=>x.value),me=S.edit&&!S.edit.dup?S.edit.id:null;
+ {const rt=!!($('crat')&&$('crat').checked&&r.est_test),cur=me&&D.cr.find(x=>x.id==me);if(rt||(cur&&cur.rattrapage))r.rattrapage=rt;
+  const pc=$('cpv').checked;if(pc||(cur&&cur.previsionnel))r.previsionnel=pc&&!sel.length}      // dès qu'on coche des candidats, le créneau devient un créneau normal
+ const sc=sel.map(i=>D.st.find(x=>x.id==i)).filter(x=>x&&sansCat(x));if(sc.length)return alert('ENREGISTREMENT REFUSÉ : candidat(s) sans catégorie : '+sc.map(x=>x.prenom+' '+x.nom).join(', ')+'.\nRenseignez leur catégorie dans Stagiaires (✎).');
+ if(!r.jour||!r.debut||!r.fin)return alert('Complétez le jour et les horaires.');
+ if(r.fin<=r.debut)return alert('Heure de fin invalide.');
+ if(r.est_test&&r.nature_test=='Théorie'&&!r.est_formation&&mins(r.fin)-mins(r.debut)!==Math.round((+D.lim.ut_theorie||1)*60))return alert("ENREGISTREMENT REFUSÉ : une théorie compte toujours "+fmt(+D.lim.ut_theorie||1)+" h (1 UT) au planning, elle ne se raccourcit pas ni ne s'allonge. Corrigez l'heure de début : la fin se calcule seule.");if(!r.est_formation&&!r.est_test)return alert('Choisissez Formation et/ou Test.');
+ if(r.est_test&&r.nature_test=='Pratique'&&catsFam(r.famille).length&&!r.categorie&&!r.previsionnel)return alert('Choisissez la catégorie testée (test pratique).');
+ r.ut_session=r.est_test&&r.nature_test=='Théorie'?+D.lim.ut_theorie:0;      // 1 UT par session de théorie, quel que soit le nombre de candidats
+ const rows=sel.map(s=>({stagiaire_id:s,ut_prat:r.est_test&&r.nature_test=='Pratique'?utPrat(D.st.find(x=>x.id==s),r.categorie):0,ut_theo:0}));
+ if(!await verifierEtConfirmer(r,sel,me,rows))return;
+ let row;if(me){const cur=D.cr.find(x=>x.id==me),d=await ok(sb.from('creneaux').update(r).eq('id',me).eq('maj_le',cur.maj_le).select());
+  if(!d.length){alert('Ce créneau a été modifié sur un autre poste : rien n\'a été enregistré. Rechargement.');return charger()}row=d[0]}
+ else row=(await ok(sb.from('creneaux').insert(r).select()))[0];
+ await ok(sb.from('creneau_stagiaires').delete().eq('creneau_id',row.id));
+ if(rows.length)await nettoyerVides(row.id,r);
+ if(rows.length)await ok(sb.from('creneau_stagiaires').insert(rows.map(x=>({creneau_id:row.id,...x}))));S.edit=null;charger()}
+
+// ---- Planning par stagiaire : tableau semaine ; clic sur "+" = nouveau créneau prérempli, clic sur un créneau = le modifier ----
+// Repère sur les onglets : ● n = n candidat(s) restent à planifier ; ✓ = tous planifiés ; rien = aucun candidat cette semaine
+const planN=f=>{const jr=SJ(),l=semSt(f).filter(s=>s.date_debut||sansCat(s));return{n:l.length,a:l.filter(s=>aPlanifier(s,jr)).length}};
+const repPlan=f=>{const g=f=='Globale'?FAM.map(planN).reduce((x,y)=>({n:x.n+y.n,a:x.a+y.a}),{n:0,a:0}):planN(f);return g.n?(g.a?` <span class="rep">● ${g.a} à planifier</span>`:' <span class="rep">✓ planifié</span>'):''};
+function prevCard(f){const jr=SJ(),l=D.cr.filter(c=>c.previsionnel&&jr.includes(c.jour)&&(f=='Globale'||c.famille==f)).sort((a,b)=>(a.jour+a.debut).localeCompare(b.jour+b.debut));
+ return `<div class="card" style="border:2px dashed #111"><b>🗓 Créneaux prévisionnels de la semaine</b> <button class="sec" onclick="nouvPrev('${f}')">➕ Créneau prévisionnel</button>`+
+  (l.length?l.map(c=>`<div class="mini" style="border:2px dashed #111;margin:6px 0" onclick="editCr('${c.id}')">🗓 <b>${JN[jr.indexOf(c.jour)]} ${frc(c.jour)}</b> ${c.debut.slice(0,5)}–${c.fin.slice(0,5)} · ${c.famille}${c.categorie?' '+esc(c.categorie):''} · ${typeB(c)} · ${nomF(c)} <button class="sec" style="min-height:26px;padding:1px 8px">✎ Compléter</button> <button class="del" style="min-height:26px;padding:1px 8px" onclick="event.stopPropagation();sup('creneaux','${c.id}')">✕</button></div>`).join(''):'<br><small>Aucun créneau prévisionnel cette semaine.</small>')+'</div>'}
+function nouvPrev(f){formCr();if(f&&f!='Globale')$('cfa').value=f;$('cpv').checked=true;S.sel=[];S.cc='';raf(1,1);majFin('hint');$('fc').scrollIntoView()}
+function planTabs(){const f=S.pfam||'R482';
+ return `<div class="nav">${[...FAM,'Globale'].map(x=>`<button ${fcs(x)} class="${f==x?'':'sec'}" onclick="S.pfam='${x}';render()">${x=='Globale'?'Vue globale':x}${repPlan(x)}</button>`).join('')}</div>`+resteCard(f)+prevCard(f)+(f=='Globale'?FAM.map(r=>`<h3>${r}</h3>${tabPlan(r)}`).join(''):tabPlan(f))}
+// ---- Planning par stagiaire (lisible d'un coup d'œil) : en-tête de jours fixe, jour rappelé dans chaque case, testeur = pastille lettre/couleur/trame du jour, ce qui reste à faire en évidence ----
+const JL3=['Lun','Mar','Mer','Jeu','Ven'],natT=n=>n=='Théorie'?'📖 théorie':n=='Pratique'?'🔧 pratique':'';
+function blocCr(c,s,tm){const t=c.est_test?(tm[c.jour]||{})[c.formateur_id||'']:null,
+ type=[c.est_formation?`FORM. ${natT(c.nature_formation)}`:'',c.est_test?`TEST ${natT(c.nature_test)}${c.categorie?' '+esc(c.categorie):''}`:''].filter(Boolean).join(' + '),
+ ut=estPr(c)?` · <b>${fmt(+(c.creneau_stagiaires.find(z=>z.stagiaire_id==s.id)||{}).ut_prat||0)} UT</b>`:'';
+ return `<div class="cr2 ${c.est_test?'t':'f'}" style="${t?'border-left-color:'+t.bg:''}" onclick="editCr('${c.id}')"><button class="cx" title="Retirer ce candidat du créneau" onclick="event.stopPropagation();retirer('${c.id}','${s.id}')">✕</button><div><b>${c.debut.slice(0,5)}–${c.fin.slice(0,5)}</b>${t?' '+tchip(t):''}</div><div>${type}${ut}</div><div class="fn">${nomF(c)}</div></div>`}
+function celPlan(s,d,i,tm){if(!dEnPlace(s,d))return '<td class="off dc">·</td>';
+ const cs=D.cr.filter(c=>c.jour==d&&inCr(c,s.id)).sort((a,b)=>a.debut.localeCompare(b.debut)),t=dayType(s,d),hasF=cs.some(c=>c.est_formation),hasT=cs.some(c=>c.est_test),
+  lab=t=='Les deux'?'FORM. + TEST':t=='Test'?'TEST':'FORM.',
+  mq=[t!='Test'&&!hasF?'formation':'',t!='Formation'&&!hasT?manqueTest(s).replace(/ à planifier$/,''):''].filter(Boolean);
+ return `<td class="dc"><div class="dl"><span>${JL3[i]} ${d.slice(8)}/${d.slice(5,7)}</span><span class="dt">${lab}</span></div>`+cs.map(c=>blocCr(c,s,tm)).join('')+(mq.length?`<div class="manque">⚠ à planifier : ${mq.join(' + ')}</div>`:'')+`<button class="sec add" onclick="nouvCr('${s.id}','${d}')">＋ ajouter</button></td>`}
+function ligPlan(s,jr,tm){const ap=aPlanifier(s,jr);
+ return `<tr id="r-${s.id}" data-n="${esc(nz(s.prenom+' '+s.nom+' '+(s.entreprise||'')))}" class="${ap?'ko':'okr'}"><td class="nm"><b>${esc(s.prenom)} ${esc(s.nom)}</b>${s.theorie_seule?' <span class="th1">📖 théorie seule</span>':''}<br><small>${esc(s.entreprise||'')} · ${(s.categories||[]).join(', ')||'—'} · ${s.type}</small><div class="${ap?'manque':'fait'}">${ap?(ap.startsWith('⚠')?ap:'⚠ '+ap):'✓ tout est planifié'}</div></td>`+jr.map((d,i)=>celPlan(s,d,i,tm)).join('')+'</tr>'}
+function qsPlan(v){S.q=v;const q=nz(v);document.querySelectorAll('tr[data-n]').forEach(r=>{r.style.display=!q||r.dataset.n.includes(q)?'':'none'});document.querySelectorAll('input.qs').forEach(i=>{if(i.value!==v)i.value=v})}
+function tabPlan(f){const jr=SJ(),tm=testMap(),auj=iso(new Date());let l=semSt(f).filter(s=>s.date_debut);
+ if(!l.length)return '<small>Aucun stagiaire cette semaine (à inscrire dans la rubrique Stagiaires).</small>';
+ if(S.rest)l=l.filter(s=>aPlanifier(s,jr));if(!l.length)return `<div class="card fait">✓ ${f} : tout est planifié.</div>`;
+ return `<datalist id="lqs-${f}">${l.map(s=>`<option value="${esc(s.prenom+' '+s.nom)}">`).join('')}</datalist><div class="twp"><table class="fam pl" style="--fc:${FC[f]}"><colgroup><col style="width:17%">${jr.map(()=>'<col style="width:16.6%">').join('')}</colgroup><tr><th class="dj0">Stagiaire<br><input type="search" class="qs" placeholder="🔍 chercher" list="lqs-${f}" value="${esc(S.q||'')}" oninput="qsPlan(this.value)"></th>${jr.map((d,i)=>`<th class="dj${d==auj?' auj':''}"><b>${JL3[i]}</b> ${d.slice(8)}/${d.slice(5,7)}${d==auj?' ◀ auj.':''}<br><button class="sec" style="min-height:30px;padding:2px 8px" onclick="nouvGrp('${f}','${d}')">👥 Tous</button></th>`).join('')}</tr>`+l.map(s=>ligPlan(s,jr,tm)).join('')+'</table></div>'}
+function resteCard(f){const jr=SJ(),fs=f=='Globale'?FAM:[f],l=fs.flatMap(x=>semSt(x).filter(s=>s.date_debut||sansCat(s)).map(s=>({s,ap:aPlanifier(s,jr)})).filter(o=>o.ap));
+ return `<div class="card ${l.length?'ko':'fait'}"><b>${l.length?'⚠ '+l.length+' candidat(s) à compléter':'✓ Tout est planifié'}</b> <button class="sec" onclick="S.rest=!S.rest;render()">${S.rest?'👁 Voir tout le monde':'🔎 Ne voir que ce qui reste'}</button>`+
+  (l.length?'<div>'+l.map(o=>`<button class="sec chipr" onclick="const e=document.getElementById('r-${o.s.id}');if(e)e.scrollIntoView({behavior:'smooth',block:'center'})">${esc(o.s.prenom)} ${esc(o.s.nom)} <small>${esc(o.ap.replace(/^⚠ ?/,''))}</small></button>`).join('')+'</div>':'')+
+  `<div class="leg">🔧 pratique · 📖 théorie · FORM. = formation · TEST = test · pastille = testeur du jour (lettre, couleur et trame changent chaque jour) · trait double à gauche = formation</div></div>`}
+// Groupe : tous les stagiaires de la famille présents ce jour sont cochés d'un coup (on en décoche au besoin ; changer Formation/Test puis « Tout cocher » ajuste la liste)
+const selAll=v=>{document.querySelectorAll('.cs').forEach(x=>x.checked=v);majFin('auto')};
+function nouvGrp(f,d){formCr();$('cj').value=d;$('cfa').value=f;
+ const pr=D.st.filter(s=>s.famille==f&&dEnPlace(s,d)),n=t=>pr.filter(s=>dayType(s,d)==t).length,t=n('Test')>n('Formation')?'Test':'Formation';
+ $('cef').checked=t=='Formation';$('cet').checked=t=='Test';$('cnt').value='Pratique';S.sel=[];S.cc='';raf(1,1);selAll(true);majFin('hint');$('fc').scrollIntoView()}
+function nouvCr(sid,d){const s=D.st.find(x=>x.id==sid);formCr();$('cj').value=d;$('cfa').value=s.famille;
+ const t=dayType(s,d),th=D.cr.some(c=>estTh(c)&&inCr(c,s.id)),m=catsSansPratique(s);
+ $('cef').checked=t!='Test';$('cet').checked=t!='Formation';if($('cet').checked&&!$('cef').checked){$('cnt').value='Pratique'}
+ S.sel=[sid];S.cc=$('cet').checked&&!$('cef').checked&&th&&m[0]?m[0]:'';raf(1,1);majFin('auto');$('fc').scrollIntoView()}   // type modifiable ; pour un test, la catégorie sans pratique est proposée d'abord
+
+// ---- Impression (noir et blanc : cadres et libellés, aucune information portée par la couleur) ----
+const tabPrint=l=>`<table style="width:100%"><tr><th>Heure</th><th>Famille</th><th>Type</th><th>Formateur</th><th>Salle</th><th>Stagiaires</th><th>Consigne</th></tr>`+l.map(c=>`<tr><td>${c.debut.slice(0,5)}–${c.fin.slice(0,5)}</td><td>${c.famille}${c.categorie?' '+c.categorie:''}</td><td>${typeB(c)}</td><td>${(D.f.find(x=>x.id==c.formateur_id)||{}).nom||'à affecter'}</td><td>${c.salle_id?(D.sa.find(x=>x.id==c.salle_id)||{}).nom:'—'}</td><td>${c.creneau_stagiaires.map(x=>nomSt(x.stagiaire_id)).join(', ')}</td><td>${esc(c.consigne||'')}</td></tr>`).join('')+'</table>';
+function imprimer(f){  // f='' : global ; 'tous' : une page par formateur ; sinon un formateur
+ const fr=d=>d.split('-').reverse().join('/'),sem=`Semaine du ${fr(S.lundi)} au ${fr(add(S.lundi,4))}`;
+ const page=(t,id)=>`<section style="page-break-after:always"><h1>${t}</h1><h3>${sem}</h3>`+JN.map((j,i)=>{const d=add(S.lundi,i),l=D.cr.filter(c=>c.jour==d&&(!id||c.formateur_id==id));
+  return `<h4>${j} ${d.slice(8)}/${d.slice(5,7)}</h4>`+(l.length?tabPrint(l):'<p>Aucun créneau.</p>')}).join('')+'</section>';
+ $('pz').innerHTML=f==''?page('Planning global',''):f=='tous'?D.f.map(x=>page('Planning – '+x.nom,x.id)).join(''):page('Planning – '+D.f.find(x=>x.id==f).nom,f);
+ window.print()}
+
+// ---- Temps réel multi-postes : si un formulaire est ouvert, on prévient au lieu d'écraser la saisie ----
+let tm;sb.channel('adm').on('postgres_changes',{event:'*',schema:'public',table:'signal'},()=>{if(!D.p)return;clearTimeout(tm);tm=setTimeout(()=>{
+ const a=document.activeElement,saisie=a&&/INPUT|SELECT|TEXTAREA/.test(a.tagName)&&a.closest('#fc,#sf'),sf=$('sf');
+ if(S.edit||saisie||(sf&&!sf.hidden)){const b=$('ban');if(b)b.hidden=false}else charger()},400)}).subscribe();
+init();
+</script></body></html>
